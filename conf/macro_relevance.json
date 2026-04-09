@@ -1,0 +1,66 @@
+{
+  "_description": "Lista curada de temas macro que impactam BTC. Editável manualmente.",
+  "_updated": "2026-04-07",
+
+  "high_priority": [
+    "iran", "war", "strait", "hormuz", "oil", "crude", "opec",
+    "israel", "tehran", "red sea", "drone strike",
+    "military", "airstrike", "air strike", "missile strike", "naval", "troops",
+    "invasion", "occupation", "ceasefire", "escalation",
+    "fed", "fomc", "rate cut", "rate hike", "kevin warsh", "powell",
+    "inflation", "cpi", "pce",
+    "tariff", "sanctions", "embargo", "trade war",
+    "recession", "crash", "crisis", "contagion",
+    "bitcoin", "crypto", "btc", "ethereum", "etf",
+    "china", "russia", "nuclear", "north korea",
+    "treasury", "debt ceiling", "default",
+    "microstrategy", "michael saylor", "strategy",
+    "metaplanet", "semler scientific", "at-the-market", "corporate treasury",
+    "jack yi", "cashapp", "block inc",
+    "tether", "usdt", "stablecoin", "usde", "ethena",
+    "binance", "coinbase", "sec crypto",
+    "halving", "mining",
+    "funding rate", "basis trade", "liquidation map",
+    "sab 121",
+    "yen carry trade", "boj rate"
+  ],
+
+  "medium_priority": [
+    "dollar", "dxy", "yields", "bonds", "treasury yields",
+    "nasdaq", "sp500", "stocks", "equity",
+    "gold", "commodities", "natural gas", "gold correlation",
+    "unemployment", "jobs", "payroll", "nonfarm",
+    "bank", "liquidity", "qe", "qt",
+    "basel", "basel iii", "capital requirements",
+    "grayscale", "blackrock", "fidelity",
+    "nupl", "whale", "exchange outflow",
+    "vix", "move index", "volatility", "real realized volatility",
+    "housing", "consumer confidence",
+    "europe", "ecb", "boj", "japan", "japan cpi",
+    "brics currency", "productivity growth",
+    "m2 money supply", "reverse repo", "btfp",
+    "yen carry trade"
+  ],
+
+  "negative_combos": {
+    "_description": "Combinações que devem receber peso negativo extra no score. War+Oil no curto prazo = BTC cai (deleveraging institucional antes de recuperar em 3-5 dias).",
+    "war_oil": {
+      "keywords": ["war", "oil", "crude", "strait", "hormuz"],
+      "min_match": 2,
+      "score_adjustment": -2.0,
+      "reason": "Post-ETF: guerra+oil = instituições vendem BTC para cobrir margem. Queda inicial 3-5 dias antes de recuperação."
+    },
+    "carry_trade_unwind": {
+      "keywords": ["yen", "carry trade", "boj", "japan rate"],
+      "min_match": 2,
+      "score_adjustment": -2.0,
+      "reason": "Yen carry trade unwind = liquidez global encolhe, BTC é primeiro a sofrer."
+    },
+    "institutional_deleveraging": {
+      "keywords": ["margin call", "liquidation", "deleveraging", "forced selling"],
+      "min_match": 1,
+      "score_adjustment": -1.5,
+      "reason": "Deleveraging institucional = venda forçada de BTC."
+    }
+  }
+}

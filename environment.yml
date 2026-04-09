@@ -1,0 +1,35 @@
+name: btc_trading_v1
+
+channels:
+  - conda-forge
+
+dependencies:
+  - python=3.11
+  - pip
+  - pandas=2.3
+  - numpy=1.26
+  - scipy=1.14
+  - pyarrow>=14
+  - statsmodels
+
+  - pip:
+      # === Data ingestion ===
+      - requests>=2.31
+      - ccxt>=4.0            # Binance spot + futures (robust, unified API)
+      - fredapi>=0.5         # FRED macro data
+      - feedparser>=6.0      # RSS parsing (Fed, Google News, CryptoCompare)
+      - yfinance>=0.2        # VIX, DXY, Oil, S&P500
+
+      # === Models ===
+      - hmmlearn>=0.3        # R5C HMM (Bull/Sideways/Bear)
+
+      # === AI / LLM ===
+      - openai>=1.0          # DeepSeek API (OpenAI-compatible)
+
+      # === Dashboard ===
+      - streamlit>=1.30
+      - plotly>=5.18
+
+      # === Utilities ===
+      - python-dateutil>=2.8
+      - pytz

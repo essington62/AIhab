@@ -1,0 +1,159 @@
+# parameters.yml — All tunable parameters for the btc-trading-v1 system.
+# Gate Scoring v2 — validated walk-forward (208 signals, 2025+)
+
+# ---------------------------------------------------------------------------
+# Z-score rolling windows
+# ---------------------------------------------------------------------------
+zscore_windows:
+  oi: 14
+  taker: 14
+  funding: 14
+  dgs10: 30
+  dgs2: 30
+  rrp: 30
+  yield_curve: 30
+  stablecoin_mcap: 30
+  bubble_index: 30
+  etf_flows: 30
+  fear_greed: 30
+
+etf_flow_rolling: 7          # days for ETF cumulative flow pre-z-score
+
+# ---------------------------------------------------------------------------
+# Technical indicators (G1)
+# ---------------------------------------------------------------------------
+technical:
+  bb_window: 20
+  bb_std: 2
+  rsi_window: 14
+  ma_windows: [7, 21, 50, 99, 200]
+
+# G1 bucket scoring — DO NOT MODIFY (walk-forward validated)
+g1_bb_scores:
+  - {threshold: 0.80, condition: "gte", score: -2.0}   # kill switch top
+  - {threshold: 0.20, condition: "lt",  score: 3.0}    # win 88%
+  - {threshold: 0.30, condition: "lt",  score: 2.0}    # win 77%
+  - {threshold: 0.40, condition: "lt",  score: 0.5}
+  - {threshold: null, condition: "else", score: 0.0}
+
+g1_rsi_scores:
+  - {threshold: 35, condition: "lt",  score: 1.0}
+  - {threshold: 45, condition: "lt",  score: 0.5}
+  - {threshold: 60, condition: "gt",  score: -1.0}
+  - {threshold: null, condition: "else", score: 0.0}
+
+# ---------------------------------------------------------------------------
+# Gate parameters (corr, sensitivity, max_score) for G3–G10
+# ---------------------------------------------------------------------------
+gate_params:
+  g3_dgs10:    [-0.315, 0.7, 1.0]
+  g3_curve:    [-0.282, 0.7, 0.8]
+  g3_rrp:      [0.212,  0.7, 0.7]
+  g3_dgs2:     [-0.154, 0.7, 0.5]
+  g4_oi:       [-0.472, 0.8, 2.0]
+  g5_stable:   [0.326,  0.6, 1.0]
+  g6_bubble:   [-0.345, 0.7, 1.0]
+  g7_etf:      [0.263,  0.6, 1.0]
+  g8_fg:       [-0.211, 0.7, 0.8]
+  g9_taker:    [0.143,  0.5, 0.5]
+  g10_funding: [-0.064, 0.4, 0.5]
+
+# ---------------------------------------------------------------------------
+# Cluster caps (anti-double-counting)
+# ---------------------------------------------------------------------------
+cluster_caps:
+  technical:   [-2.0, 3.5]
+  news:        [-1.5, 1.0]
+  macro:       [-1.5, 1.0]
+  positioning: [-2.0, 1.5]
+  liquidity:   [-1.5, 1.5]
+  sentiment:   [-1.5, 1.5]
+
+# ---------------------------------------------------------------------------
+# Dynamic threshold
+# ---------------------------------------------------------------------------
+threshold:
+  warmup_value: 3.5          # used when history < min_history_days
+  floor: 2.0
+  ceiling: 5.0
+  quantile: 0.75
+  history_window: 90         # days
+  min_history_days: 90
+
+# ---------------------------------------------------------------------------
+# Kill switches
+# ---------------------------------------------------------------------------
+kill_switches:
+  bb_top_threshold: 0.80
+  oi_extreme_z: 2.5
+  news_bear_score: -3.0
+  g2_fed_fomc_threshold: -1.0
+
+# ---------------------------------------------------------------------------
+# Stale data tolerance (days)
+# ---------------------------------------------------------------------------
+stale_tolerance_days:
+  g4_oi: 3
+  g9_taker: 3
+  g10_funding: 3
+  g5_stablecoin: 7
+  g6_bubble: 7
+  g7_etf: 5
+  g8_fg: 3
+  g3_macro: 2
+
+# ---------------------------------------------------------------------------
+# Execution / position sizing
+# ---------------------------------------------------------------------------
+execution:
+  position_size_pct: 1.0     # 100% of paper capital per trade
+  stop_loss_pct: 0.02        # 2%
+  take_profit_pct: 0.015     # 1.5%
+  trailing_stop_pct: 0.01    # 1%
+  paper_capital_usd: 10000.0
+
+# ---------------------------------------------------------------------------
+# News classification (DeepSeek)
+# ---------------------------------------------------------------------------
+news:
+  crypto_weight: 0.5
+  fed_weight: 0.5
+  max_articles_per_cycle: 50
+  lookback_hours: 4          # hours to look back for news scoring
+
+# ---------------------------------------------------------------------------
+# Fed Sentinel proximity adjustments (added to threshold)
+# ---------------------------------------------------------------------------
+fed:
+  proximity_adjustments:
+    fomc_decision_t0_t2: 1.5      # T-2 to T0 FOMC decision
+    fomc_decision_t3_t5: 0.7      # T-5 to T-3 FOMC
+    hearing_transition_t0_t1: 0.5 # T-1 to T0 hearing/transition
+    fomc_post_t1: 0.3             # T+1 after FOMC
+    blackout: 0.3                 # T-10 to T-2 blackout
+    normal: 0.0
+  blackout_days_before: 10        # blackout starts T-10
+  blackout_ends_days_before: 2    # blackout ends T-2
+  g2_fed_kill_threshold: -1.0
+
+# ---------------------------------------------------------------------------
+# R5C HMM
+# ---------------------------------------------------------------------------
+r5c:
+  n_states: 3
+  covariance_type: full
+  features: [log_return, vol_short, vol_ratio, drawdown, volume_z, slope_21d]
+  vol_short_window: 7
+  vol_long_window: 30
+  slope_window: 21
+  # State label mapping (index → label) — ordered by drawdown ascending
+  # means_[0].drawdown=-0.019 (Bull), means_[1].drawdown=-0.157 (Bear), means_[2].drawdown=-0.136 (Sideways)
+  state_labels: {0: "Bull", 1: "Bear", 2: "Sideways"}
+  daily_close_hour_utc: 0   # Binance daily candle closes at 00:00 UTC
+
+# ---------------------------------------------------------------------------
+# Data quality
+# ---------------------------------------------------------------------------
+dq:
+  max_gap_hours_1h: 3       # alert if gap > 3h in 1h series
+  min_rows_for_scoring: 14  # min rows in z-score window before using

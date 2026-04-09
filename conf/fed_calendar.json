@@ -1,0 +1,39 @@
+{
+  "fomc_decisions": [
+    "2026-01-29",
+    "2026-03-18",
+    "2026-04-29",
+    "2026-06-17",
+    "2026-07-29",
+    "2026-09-16",
+    "2026-10-28",
+    "2026-12-16"
+  ],
+  "hearings": [
+    {"date": "2026-02-11", "type": "Humphrey-Hawkins", "member": "Jerome Powell"},
+    {"date": "2026-02-12", "type": "Humphrey-Hawkins", "member": "Jerome Powell"},
+    {"date": "2026-04-16", "type": "Senate hearing", "member": "Kevin Warsh"},
+    {"date": "2026-04-17", "type": "House hearing", "member": "Kevin Warsh"}
+  ],
+  "transitions": [
+    {"date": "2026-05-15", "type": "chair_term_end", "member": "Jerome Powell"},
+    {"date": "2026-05-16", "type": "chair_start",    "member": "Kevin Warsh"}
+  ],
+  "blackout_days_before": 10,
+  "blackout_ends_days_before": 2,
+  "member_weights": {
+    "Jerome Powell":    1.0,
+    "Kevin Warsh":      0.8,
+    "John Williams":    0.7,
+    "Philip Jefferson": 0.6,
+    "Christopher Waller": 0.6,
+    "Michelle Bowman":  0.5,
+    "Stephen Miran":    0.5,
+    "Michael Barr":     0.4,
+    "Lisa Cook":        0.4,
+    "Beth Hammack":     0.4,
+    "Neel Kashkari":    0.4,
+    "Lorie Logan":      0.4,
+    "Anna Paulson":     0.3
+  }
+}

@@ -1,0 +1,84 @@
+# catalog.yml — All data paths for btc-trading-v1
+# Use get_path(name) from src/config.py — never hardcode paths.
+
+# ---------------------------------------------------------------------------
+# 01_raw
+# ---------------------------------------------------------------------------
+raw_spot_1h: "data/01_raw/spot/btc_1h.parquet"
+
+# ---------------------------------------------------------------------------
+# 01_raw — market context (dashboard only)
+# ---------------------------------------------------------------------------
+market_vix:   "data/01_raw/market/vix_daily.parquet"
+market_dxy:   "data/01_raw/market/dxy_daily.parquet"
+market_oil:   "data/01_raw/market/oil_daily.parquet"
+market_sp500: "data/01_raw/market/sp500_daily.parquet"
+raw_spot_1d: "data/01_raw/spot/btc_1d.parquet"
+
+raw_futures_oi: "data/01_raw/futures/oi_1h.parquet"
+raw_futures_taker: "data/01_raw/futures/taker_1h.parquet"
+raw_futures_funding: "data/01_raw/futures/funding_8h.parquet"
+raw_futures_ls_account: "data/01_raw/futures/ls_account_1h.parquet"
+raw_futures_ls_position: "data/01_raw/futures/ls_position_1h.parquet"
+
+# CoinGlass aggregated futures (4h) — replaces Binance 1h for G4/G9/G10
+raw_futures_oi_4h: "data/01_raw/futures/oi_4h.parquet"
+raw_futures_funding_4h: "data/01_raw/futures/funding_4h.parquet"
+raw_futures_taker_4h: "data/01_raw/futures/taker_4h.parquet"
+
+raw_macro: "data/01_raw/macro/fred_daily.parquet"
+
+coinglass_stablecoin: "data/01_raw/coinglass/stablecoin_mcap_daily.parquet"
+coinglass_bubble: "data/01_raw/coinglass/bubble_index_daily.parquet"
+coinglass_etf: "data/01_raw/coinglass/etf_flows_daily.parquet"
+
+sentiment_fg: "data/01_raw/sentiment/fear_greed_daily.parquet"
+
+news_crypto: "data/01_raw/news/crypto_news.parquet"
+news_macro: "data/01_raw/news/macro_news.parquet"
+news_fed: "data/01_raw/news/fed_news.parquet"
+
+# ---------------------------------------------------------------------------
+# 02_intermediate
+# ---------------------------------------------------------------------------
+clean_spot_1h: "data/02_intermediate/spot/btc_1h_clean.parquet"
+clean_spot_1d: "data/02_intermediate/spot/btc_1d_clean.parquet"
+
+clean_futures_oi: "data/02_intermediate/futures/oi_1h_clean.parquet"
+clean_futures_taker: "data/02_intermediate/futures/taker_1h_clean.parquet"
+clean_futures_funding: "data/02_intermediate/futures/funding_1h_clean.parquet"
+clean_futures_ls_account: "data/02_intermediate/futures/ls_account_1h_clean.parquet"
+clean_futures_ls_position: "data/02_intermediate/futures/ls_position_1h_clean.parquet"
+
+clean_macro: "data/02_intermediate/macro/fred_daily_clean.parquet"
+
+# ---------------------------------------------------------------------------
+# 02_features
+# ---------------------------------------------------------------------------
+gate_zscores: "data/02_features/gate_zscores.parquet"
+news_scores: "data/02_features/news_scores.parquet"
+
+# ---------------------------------------------------------------------------
+# 03_models
+# ---------------------------------------------------------------------------
+r5c_model: "data/03_models/r5c_hmm.pkl"
+r5c_regime_history: "data/03_models/r5c_regime_history.parquet"
+
+# ---------------------------------------------------------------------------
+# 04_scoring
+# ---------------------------------------------------------------------------
+gate_scores: "data/04_scoring/gate_scores.parquet"
+score_history: "data/04_scoring/score_history.parquet"
+
+# ---------------------------------------------------------------------------
+# 05_output
+# ---------------------------------------------------------------------------
+portfolio_state: "data/05_output/portfolio_state.json"
+trade_log: "data/05_output/trade_log.parquet"
+cycle_log: "data/05_output/cycle_log.parquet"
+
+# ---------------------------------------------------------------------------
+# conf
+# ---------------------------------------------------------------------------
+fed_calendar: "conf/fed_calendar.json"
+credentials: "conf/credentials.yml"

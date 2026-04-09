@@ -1,0 +1,38 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-03-31",
+  "description": "Keywords para buscar notícias macro exógenas que impactam BTC indiretamente",
+  "search_groups": {
+    "energy_oil": {
+      "queries": ["oil crisis", "oil price surge", "hormuz strait", "opec cut", "fuel shortage", "energy crisis"],
+      "cadeia_causal": "oil sobe → inflação → juros → risk-off → BTC cai",
+      "enabled": true
+    },
+    "fed_monetary": {
+      "queries": ["federal reserve rate", "fed inflation", "fomc decision", "powell speech", "rate hike", "rate cut"],
+      "cadeia_causal": "fed hawkish → juros sobem → liquidez cai → BTC cai",
+      "enabled": true
+    },
+    "geopolitical": {
+      "queries": ["iran war", "trump iran", "middle east conflict", "sanctions iran"],
+      "cadeia_causal": "tensão geopolítica → risk-off → flight to safety → BTC volátil",
+      "enabled": true
+    },
+    "inflation": {
+      "queries": ["inflation data", "cpi report", "consumer prices"],
+      "cadeia_causal": "inflação alta → fed hawkish → juros → BTC cai",
+      "enabled": true
+    },
+    "global_risk": {
+      "queries": ["recession risk", "market crash", "bank failure", "debt crisis"],
+      "cadeia_causal": "risco sistêmico → risk-off extremo → BTC cai (curto) ou sobe (hedge)",
+      "enabled": true
+    }
+  },
+  "max_queries_per_hour": 5,
+  "max_results_per_query": 10,
+  "combine_weights": {
+    "macro_weight": 0.60,
+    "crypto_weight": 0.40
+  }
+}
