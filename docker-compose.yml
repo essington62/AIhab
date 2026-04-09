@@ -1,0 +1,33 @@
+services:
+  app:
+    build: .
+    container_name: aihab-app
+    volumes:
+      - aihab-data:/app/data
+      - aihab-logs:/app/logs
+      - ./conf/credentials.yml:/app/conf/credentials.yml:ro
+    environment:
+      - TZ=UTC
+      - PYTHONPATH=/app
+    restart: unless-stopped
+
+  dashboard:
+    build: .
+    container_name: aihab-dashboard
+    command: ["python", "-m", "streamlit", "run", "src/dashboard/app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
+    ports:
+      - "8501:8501"
+    volumes:
+      - aihab-data:/app/data:ro
+      - aihab-logs:/app/logs:ro
+      - ./conf/credentials.yml:/app/conf/credentials.yml:ro
+    environment:
+      - TZ=UTC
+      - PYTHONPATH=/app
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  aihab-data:
+  aihab-logs:
