@@ -1,10 +1,10 @@
 FROM python:3.11-slim
-
 WORKDIR /app
 
-# System dependencies + supercronic (container-native cron: herda env, loga no stdout)
+# System dependencies + tini (PID 1) + supercronic (cron)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+      curl \
+      tini \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL https://github.com/aptible/supercronic/releases/download/v0.2.33/supercronic-linux-amd64 \
        -o /usr/local/bin/supercronic \
@@ -33,5 +33,7 @@ COPY crontab /etc/cron.d/aihab-cron
 # PYTHONPATH baked in — visible to supercronic jobs and any python -m call
 ENV PYTHONPATH=/app
 
-# supercronic: runs in foreground, inherits env, logs to stdout (capturado por docker logs)
-CMD ["supercronic", "/etc/cron.d/aihab-cron"]
+# tini as PID 1 (proper signal handling + zombie reaping)
+# supercronic: runs in foreground, inherits env, logs to stdout
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["/usr/local/bin/supercronic", "/etc/cron.d/aihab-cron"]
