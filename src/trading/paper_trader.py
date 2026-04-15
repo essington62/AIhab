@@ -238,6 +238,15 @@ def run_cycle() -> dict:
     # 7. Score history
     score_history = load_score_history()
 
+    # 7b. Spot df for MA200 override (1h clean → enough history)
+    spot_df = None
+    try:
+        _sp = pd.read_parquet(get_path("clean_spot_1h"))
+        _sp["timestamp"] = pd.to_datetime(_sp["timestamp"], utc=True)
+        spot_df = _sp.sort_values("timestamp").reset_index(drop=True)
+    except Exception as e:
+        logger.warning(f"spot_df load failed (MA200 override disabled): {e}")
+
     # 8. Gate Scoring (hardened)
     try:
         result = run_scoring_pipeline(
@@ -249,6 +258,7 @@ def run_cycle() -> dict:
             news_crypto_score=news_crypto_score,
             fed_context=fed_context,
             score_history=score_history,
+            spot_df=spot_df,
         )
     except Exception as e:
         logger.error(f"Gate scoring failed: {e}", exc_info=True)

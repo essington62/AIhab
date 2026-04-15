@@ -5,6 +5,8 @@ src/models/gate_scoring.py — Gate Scoring v2 engine.
 ALL parameters read from parameters.yml via src/config.get_params().
 
 Entry point: run_scoring_pipeline(...) → dict with signal, score, breakdown.
+MA200 override: if close < MA200 and slope < 0 for N consecutive days → force Bear,
+bypassing R5C latency in sustained downtrends.
 """
 
 import logging
@@ -28,6 +30,53 @@ def gate_score_continuous(z: float, corr: float, sensitivity: float, max_score: 
         return 0.0
     raw = corr * np.tanh(z * sensitivity) * max_score
     return float(np.clip(raw, -max_score, max_score))
+
+
+# ---------------------------------------------------------------------------
+# MA200 override — bypass slow R5C in sustained downtrends
+# ---------------------------------------------------------------------------
+
+def check_ma200_override(spot_df: pd.DataFrame) -> dict:
+    """
+    If close < MA200 AND slope_MA200 < 0 for N consecutive days → force Bear.
+    N is read from parameters.yml ma200_override.consecutive_days (default 5).
+    """
+    cfg = get_params().get("ma200_override", {})
+    if not cfg.get("enabled", True):
+        return {"force_bear": False, "consecutive_days_below": 0,
+                "close_vs_ma200_pct": None, "ma200_slope_5d": None}
+
+    n = cfg.get("consecutive_days", 5)
+    close = spot_df["close"].astype(float)
+    ma200 = close.rolling(200, min_periods=100).mean()
+    ma200_slope = ma200 - ma200.shift(5)
+
+    below = close < ma200
+    neg_slope = ma200_slope < 0
+    combined = below & neg_slope
+
+    # Count consecutive True at the end of the series
+    consecutive = 0
+    for val in reversed(combined.values):
+        if val:
+            consecutive += 1
+        else:
+            break
+
+    last_close = close.iloc[-1]
+    last_ma200 = ma200.iloc[-1]
+    last_slope = ma200_slope.iloc[-1]
+
+    close_vs_ma200_pct = (
+        (last_close / last_ma200 - 1) * 100 if pd.notna(last_ma200) else None
+    )
+
+    return {
+        "force_bear": consecutive >= n,
+        "consecutive_days_below": consecutive,
+        "close_vs_ma200_pct": round(close_vs_ma200_pct, 2) if close_vs_ma200_pct is not None else None,
+        "ma200_slope_5d": round(float(last_slope), 1) if pd.notna(last_slope) else None,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +345,7 @@ def run_scoring_pipeline(
     news_crypto_score: float,
     fed_context: dict,
     score_history: list[float],
+    spot_df: Optional[pd.DataFrame] = None,
 ) -> dict:
     """
     Full pipeline: gates → clusters → threshold → kill switches → decision.
@@ -308,7 +358,21 @@ def run_scoring_pipeline(
       gate_scores: dict
       clusters:    dict
       proximity_adj: float
+      ma200_override: dict
     """
+    # MA200 override: bypass slow R5C in sustained downtrends
+    ma200 = {}
+    if spot_df is not None and len(spot_df) >= 100:
+        ma200 = check_ma200_override(spot_df)
+        if ma200["force_bear"] and regime != "Bear":
+            logger.info(
+                f"MA200 override: forcing Bear "
+                f"(close {ma200['close_vs_ma200_pct']:+.1f}% vs MA200, "
+                f"{ma200['consecutive_days_below']}d below, "
+                f"slope={ma200['ma200_slope_5d']})"
+            )
+            regime = "Bear"
+
     # G0 — regime check
     g0 = evaluate_g0(regime)
     if g0["block"]:
@@ -320,6 +384,7 @@ def run_scoring_pipeline(
             "gate_scores": {},
             "clusters": {},
             "proximity_adj": fed_context.get("proximity_adjustment", 0.0),
+            "ma200_override": ma200,
         }
 
     # G1
@@ -354,6 +419,7 @@ def run_scoring_pipeline(
             "gate_scores": gates,
             "clusters": {},
             "proximity_adj": fed_context.get("proximity_adjustment", 0.0),
+            "ma200_override": ma200,
         }
 
     # Cluster aggregation
@@ -398,9 +464,10 @@ def run_scoring_pipeline(
         "regime_multiplier": multiplier,
     }
 
+    ma200_tag = f" [MA200:{ma200.get('close_vs_ma200_pct'):+.1f}%]" if ma200.get("close_vs_ma200_pct") is not None else ""
     logger.info(
         f"Gate scoring: score={total_score:.3f} vs threshold={threshold:.3f} "
-        f"→ {signal} (prox_adj={prox_adj:+.1f}, regime={regime})"
+        f"→ {signal} (prox_adj={prox_adj:+.1f}, regime={regime}{ma200_tag})"
     )
 
     return {
@@ -411,4 +478,5 @@ def run_scoring_pipeline(
         "gate_scores": gate_scores,
         "clusters": cluster_result["clusters"],
         "proximity_adj": prox_adj,
+        "ma200_override": ma200,
     }

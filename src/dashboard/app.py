@@ -306,7 +306,7 @@ def compute_clusters(zs: dict, bb_pct: float, rsi_14: float, portfolio: dict) ->
         "news":        float(np.clip(g2,             -1.5,  1.0)),
         "macro":       float(np.clip(g3,             -1.5,  1.0)),
         "positioning": float(np.clip(g4 + g10,       -2.0,  1.5)),
-        "liquidity":   float(np.clip(g5 + g7,        -1.5,  1.5)),
+        "liquidity":   float(np.clip(g5 + g7,        -1.5,  2.5)),
         "sentiment":   float(np.clip(g6 + g8 + g9,   -1.5,  1.5)),
     }
     details = {
@@ -595,6 +595,15 @@ def main():
     else:
         pct_24h = 0.0
 
+    # MA200 info (from 1h spot — enough rows for rolling 200)
+    ma200_val = None; ma200_pct = None; ma200_slope = None
+    if not spot_df.empty and len(spot_df) >= 200:
+        close_s = spot_df["close"].astype(float)
+        ma200_s = close_s.rolling(200).mean()
+        ma200_val = float(ma200_s.iloc[-1])
+        ma200_pct = (price / ma200_val - 1) * 100
+        ma200_slope = float(ma200_s.iloc[-1] - ma200_s.iloc[-6]) if len(ma200_s) >= 6 else 0.0  # 5h slope
+
     # Z-scores
     zs = {}
     if not zs_df.empty:
@@ -652,6 +661,18 @@ def main():
     cycle_age  = f"{cycle_info['age_min']:.0f}min atrás" if cycle_info else "N/A"
     cycle_ok   = "✅" if cycle_info and cycle_info.get("age_min", 99) < 75 else "⚠️"
 
+    # MA200 header snippet (pre-built to avoid backslash in f-string)
+    if ma200_val:
+        _ma200_c = "pos" if (ma200_pct or 0) >= 0 else "neg"
+        _ma200_arrow = "↑" if (ma200_slope or 0) > 0 else "↓"
+        _ma200_header_html = (
+            f'<span class="header-item">MA200: <span class="header-value">${ma200_val:,.0f}</span>'
+            f' <span class="{_ma200_c}">{ma200_pct:+.1f}%</span>'
+            f' <span style="color:#8b949e">{_ma200_arrow}</span></span>'
+        )
+    else:
+        _ma200_header_html = ""
+
     st.markdown(f"""
 <div class="header-bar">
   <span>₿ <span class="header-value">${price:,.0f}</span></span>
@@ -659,6 +680,7 @@ def main():
   <span class="header-item">OI: <span class="header-value">${oi_val/1e9:.1f}B</span></span>
   <span class="header-item">F&G: <span class="header-value">{fg_val:.0f}</span> {fg_cls}</span>
   <span class="header-item">R5C: <span class="{regime_c} header-value">{regime}</span></span>
+  {_ma200_header_html}
   <span class="header-item">Gate: <span class="{sig_class}">{signal}</span></span>
   <span class="header-item">Score: <span class="header-value">{score:.3f}</span> / {threshold:.1f}</span>
   <span class="header-item">Capital: <span class="header-value">${capital:,.0f}</span></span>
@@ -721,7 +743,36 @@ def main():
 </div>""", unsafe_allow_html=True)
 
     # =========================================================================
-    # SECTION 3: WHALE TRACKING
+    # SECTION 3: AI ANALYST (DeepSeek)
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 🤖 AI Analyst (DeepSeek)")
+
+    if st.button("🔍 Gerar Análise", type="primary"):
+        context = {
+            "price": price, "pct_24h": pct_24h, "regime": regime,
+            "signal": signal, "score": total_score, "threshold": threshold,
+            "capital": capital, "has_position": portfolio.get("has_position", False),
+            "c_technical": clusters["technical"], "c_positioning": clusters["positioning"],
+            "c_macro": clusters["macro"], "c_liquidity": clusters["liquidity"],
+            "c_sentiment": clusters["sentiment"], "c_news": clusters["news"],
+            "oi_z": zs.get("oi_z",0), "taker_z": zs.get("taker_z",0),
+            "funding_z": zs.get("funding_z",0), "dgs10_z": zs.get("dgs10_z",0),
+            "curve_z": zs.get("curve_z",0), "stablecoin_z": zs.get("stablecoin_z",0),
+            "etf_z": zs.get("etf_z",0), "fg_z": zs.get("fg_z",0),
+            "bubble_z": zs.get("bubble_z",0), "ls_account": ls_account_val,
+            "whale_signal": ws_label, "fed_event": fomc.get("next_event","N/A"),
+            "fed_days": fomc.get("days_away","—"), "fed_adj": fomc.get("proximity_adj",0),
+        }
+        with st.spinner("Consultando DeepSeek..."):
+            analysis = call_deepseek_analyst(context)
+        st.markdown(f"""
+<div class="cg-card" style="font-size:14px; line-height:1.7;">
+{analysis.replace(chr(10), '<br>')}
+</div>""", unsafe_allow_html=True)
+
+    # =========================================================================
+    # SECTION 4: WHALE TRACKING
     # =========================================================================
     st.markdown("---")
     st.markdown("### 🐋 Whale Tracking")
@@ -765,7 +816,7 @@ def main():
             st.plotly_chart(fig, use_container_width=True)
 
     # =========================================================================
-    # SECTION 4: DERIVATIVES
+    # SECTION 5: DERIVATIVES
     # =========================================================================
     st.markdown("---")
     st.markdown("### 📈 Derivativos")
@@ -924,7 +975,7 @@ def main():
                 st.plotly_chart(fig, use_container_width=True)
 
     # =========================================================================
-    # SECTION 5: MACRO
+    # SECTION 6: MACRO
     # =========================================================================
     st.markdown("---")
     st.markdown("### 🏛️ Macro")
@@ -962,7 +1013,7 @@ def main():
 </div>""", unsafe_allow_html=True)
 
     # =========================================================================
-    # SECTION 6: NEWS & SENTIMENT
+    # SECTION 8: NEWS & SENTIMENT
     # =========================================================================
     st.markdown("---")
     st.markdown("### 📰 News & Sentiment")
@@ -1032,36 +1083,7 @@ def main():
 </div>""", unsafe_allow_html=True)
 
     # =========================================================================
-    # SECTION 7: AI ANALYST
-    # =========================================================================
-    st.markdown("---")
-    st.markdown("### 🤖 AI Analyst (DeepSeek)")
-
-    if st.button("🔍 Gerar Análise", type="primary"):
-        context = {
-            "price": price, "pct_24h": pct_24h, "regime": regime,
-            "signal": signal, "score": total_score, "threshold": threshold,
-            "capital": capital, "has_position": portfolio.get("has_position", False),
-            "c_technical": clusters["technical"], "c_positioning": clusters["positioning"],
-            "c_macro": clusters["macro"], "c_liquidity": clusters["liquidity"],
-            "c_sentiment": clusters["sentiment"], "c_news": clusters["news"],
-            "oi_z": zs.get("oi_z",0), "taker_z": zs.get("taker_z",0),
-            "funding_z": zs.get("funding_z",0), "dgs10_z": zs.get("dgs10_z",0),
-            "curve_z": zs.get("curve_z",0), "stablecoin_z": zs.get("stablecoin_z",0),
-            "etf_z": zs.get("etf_z",0), "fg_z": zs.get("fg_z",0),
-            "bubble_z": zs.get("bubble_z",0), "ls_account": ls_account_val,
-            "whale_signal": ws_label, "fed_event": fomc.get("next_event","N/A"),
-            "fed_days": fomc.get("days_away","—"), "fed_adj": fomc.get("proximity_adj",0),
-        }
-        with st.spinner("Consultando DeepSeek..."):
-            analysis = call_deepseek_analyst(context)
-        st.markdown(f"""
-<div class="cg-card" style="font-size:14px; line-height:1.7;">
-{analysis.replace(chr(10), '<br>')}
-</div>""", unsafe_allow_html=True)
-
-    # =========================================================================
-    # SECTION 8: SYSTEM HEALTH
+    # SECTION 7: SYSTEM HEALTH
     # =========================================================================
     st.markdown("---")
     st.markdown("### ⚙️ System Health")
@@ -1125,6 +1147,177 @@ def main():
             fig.add_hline(y=0, line_color=GREY, opacity=0.3)
             fig.update_layout(**PLOTLY, height=220, title="Score History (últimas 168 leituras)")
             st.plotly_chart(fig, use_container_width=True)
+
+    # ── Calibration Alerts ─────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**📐 Calibration Alerts (rolling 30d corr vs parameters.yml)**")
+
+    _GATE_CORR_MAP = {
+        "oi_z":         ("g4_oi",       "G4 OI"),
+        "taker_z":      ("g9_taker",    "G9 Taker"),
+        "funding_z":    ("g10_funding", "G10 Funding"),
+        "dgs10_z":      ("g3_dgs10",    "G3 DGS10"),
+        "curve_z":      ("g3_curve",    "G3 Curve"),
+        "stablecoin_z": ("g5_stable",   "G5 Stablecoin"),
+        "bubble_z":     ("g6_bubble",   "G6 Bubble"),
+        "etf_z":        ("g7_etf",      "G7 ETF"),
+        "fg_z":         ("g8_fg",       "G8 F&G"),
+    }
+    try:
+        _params = load_params()
+        _gp = _params.get("gate_params", {})
+        # Build daily z-score + return series
+        _zs_cal = zs_df.copy()
+        if "timestamp" not in _zs_cal.columns:
+            _zs_cal = _zs_cal.reset_index()
+        _zs_cal["timestamp"] = pd.to_datetime(_zs_cal["timestamp"], utc=True)
+        _zs_cal = _zs_cal.set_index("timestamp").resample("1D").last()
+        _spot_cal = spot_df.copy()
+        if not _spot_cal.empty:
+            _spot_cal["timestamp"] = pd.to_datetime(_spot_cal["timestamp"], utc=True)
+            _spot_ret = _spot_cal.set_index("timestamp").resample("1D")["close"].last().pct_change(3) * 100
+            _spot_ret = _spot_ret.shift(-1)  # forward return
+        else:
+            _spot_ret = pd.Series(dtype=float)
+
+        calib_rows = []
+        for zcol, (gkey, gname) in _GATE_CORR_MAP.items():
+            if zcol not in _zs_cal.columns or _spot_ret.empty:
+                continue
+            _m = _zs_cal[zcol].to_frame().join(_spot_ret.rename("ret3d")).dropna()
+            _m30 = _m.tail(30)
+            if len(_m30) < 10:
+                continue
+            corr_now = float(_m30[zcol].corr(_m30["ret3d"]))
+            corr_cfg = float(_gp.get(gkey, [0])[0]) if gkey in _gp else None
+            if corr_cfg is None:
+                continue
+            diff = abs(corr_now - corr_cfg)
+            calib_rows.append({
+                "gate": gname, "corr_cfg": corr_cfg, "corr_30d": corr_now,
+                "diff": diff, "n": len(_m30)
+            })
+
+        if calib_rows:
+            for r in sorted(calib_rows, key=lambda x: -x["diff"]):
+                icon = "🔴" if r["diff"] > 0.25 else ("⚠️" if r["diff"] > 0.15 else "✅")
+                color = "color:#f85149;" if r["diff"] > 0.25 else ("color:#d29922;" if r["diff"] > 0.15 else "")
+                st.markdown(
+                    f'<span style="{color}">{icon} {r["gate"]}: corr_cfg={r["corr_cfg"]:+.3f} '
+                    f'corr_30d={r["corr_30d"]:+.3f} Δ={r["diff"]:.3f} (n={r["n"]})</span>',
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.caption("Dados insuficientes para calibração (< 10 dias)")
+    except Exception as _e:
+        st.caption(f"Calibration error: {_e}")
+
+    # =========================================================================
+    # SECTION 8: PAPER TRADING
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 📋 Paper Trading")
+
+    cycle_log_df = load_parquet("data/05_output/cycle_log.parquet")
+
+    # ── Current position ───────────────────────────────────────────────────
+    has_pos    = portfolio.get("has_position", False)
+    entry_px   = portfolio.get("entry_price")
+    entry_time = portfolio.get("entry_time")
+    qty        = portfolio.get("quantity", 0.0)
+    sl_px      = portfolio.get("stop_loss_price")
+    tp_px      = portfolio.get("take_profit_price")
+    unrealized_pct = ((price / entry_px) - 1) * 100 if (has_pos and entry_px) else None
+    unrealized_usd = (price - entry_px) * qty if (has_pos and entry_px) else None
+
+    pt_c1, pt_c2, pt_c3, pt_c4 = st.columns(4)
+    _pos_color = "pos" if (unrealized_pct or 0) >= 0 else "neg"
+    with pt_c1:
+        st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">Capital</div>
+  <div class="cg-card-value">${capital:,.2f}</div>
+  <div class="cg-card-sub {'pos' if capital >= 10000 else 'neg'}">{(capital/10000-1)*100:+.2f}% vs início</div>
+</div>""", unsafe_allow_html=True)
+    with pt_c2:
+        st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">Posição</div>
+  <div class="cg-card-value {'pos' if has_pos else 'neut'}">{'ABERTA' if has_pos else 'SEM POSIÇÃO'}</div>
+  <div class="cg-card-sub">{f'Entrada: ${entry_px:,.0f}' if entry_px else '—'}</div>
+</div>""", unsafe_allow_html=True)
+    with pt_c3:
+        st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">P&L Não Realizado</div>
+  <div class="cg-card-value {_pos_color}">{f'{unrealized_pct:+.2f}%' if unrealized_pct is not None else '—'}</div>
+  <div class="cg-card-sub">{f'${unrealized_usd:+,.2f}' if unrealized_usd is not None else '—'}</div>
+</div>""", unsafe_allow_html=True)
+    with pt_c4:
+        n_entries = 0
+        if not cycle_log_df.empty and "signal" in cycle_log_df.columns:
+            n_entries = int((cycle_log_df["signal"] == "ENTER").sum())
+        st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">Sinais ENTER</div>
+  <div class="cg-card-value">{n_entries}</div>
+  <div class="cg-card-sub">total desde início</div>
+</div>""", unsafe_allow_html=True)
+
+    if has_pos and entry_px:
+        st.markdown(f"""
+<div class="cg-card" style="padding:8px 16px; margin-bottom:8px; font-size:12px;">
+  <span style="color:#8b949e;">Stop Loss: </span><span class="neg">${sl_px:,.0f}</span> &nbsp;|&nbsp;
+  <span style="color:#8b949e;">Take Profit: </span><span class="pos">${tp_px:,.0f}</span> &nbsp;|&nbsp;
+  <span style="color:#8b949e;">Quantidade: </span>{qty:.6f} BTC &nbsp;|&nbsp;
+  <span style="color:#8b949e;">Desde: </span>{entry_time}
+</div>""", unsafe_allow_html=True)
+
+    # ── Equity curve ───────────────────────────────────────────────────────
+    if not cycle_log_df.empty and "capital_usd" in cycle_log_df.columns and len(cycle_log_df) > 2:
+        cl = cycle_log_df.copy()
+        cl["timestamp"] = pd.to_datetime(cl["timestamp"], utc=True)
+        cl = cl.sort_values("timestamp")
+
+        # Buy & hold baseline: BTC price normalized to starting capital
+        first_ts = cl["timestamp"].iloc[0]
+        bh_spot = spot_df[spot_df["timestamp"] >= first_ts] if not spot_df.empty else pd.DataFrame()
+        if not bh_spot.empty:
+            bh_start_price = bh_spot["close"].iloc[0]
+            bh_equity = (bh_spot["close"] / bh_start_price) * 10000.0
+        else:
+            bh_spot = pd.DataFrame(); bh_equity = pd.Series(dtype=float)
+
+        fig_eq = go.Figure()
+        fig_eq.add_trace(go.Scatter(
+            x=cl["timestamp"], y=cl["capital_usd"],
+            name="Paper Trading", line=dict(color=GREEN, width=2),
+        ))
+        if not bh_spot.empty:
+            fig_eq.add_trace(go.Scatter(
+                x=bh_spot["timestamp"], y=bh_equity,
+                name="Buy & Hold BTC", line=dict(color=AMBER, width=1.5, dash="dot"), opacity=0.7,
+            ))
+        fig_eq.add_hline(y=10000, line_color=GREY, opacity=0.3, annotation_text="$10k")
+        fig_eq.update_layout(**PLOTLY, height=250, title="Equity Curve vs Buy & Hold")
+        st.plotly_chart(fig_eq, use_container_width=True)
+
+        # ── Stats ─────────────────────────────────────────────────────────
+        total_ret = (capital / 10000 - 1) * 100
+        days_running = (cl["timestamp"].iloc[-1] - cl["timestamp"].iloc[0]).total_seconds() / 86400
+        bh_ret = ((price / bh_start_price) - 1) * 100 if not bh_spot.empty else 0.0
+
+        stat_cols = st.columns(4)
+        with stat_cols[0]:
+            st.metric("Retorno Total", f"{total_ret:+.2f}%")
+        with stat_cols[1]:
+            st.metric("Buy & Hold", f"{bh_ret:+.2f}%")
+        with stat_cols[2]:
+            st.metric("Alpha", f"{total_ret - bh_ret:+.2f}%")
+        with stat_cols[3]:
+            st.metric("Dias rodando", f"{days_running:.0f}d")
+    else:
+        st.info("Histórico insuficiente para equity curve (cycle_log vazio).")
 
     st.caption(f"btc-trading-v1 | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | Auto-refresh: {'ON' if auto_refresh else 'OFF'}")
 

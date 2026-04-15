@@ -69,6 +69,57 @@ def title_hash(title: str) -> str:
     return hashlib.sha1(_normalize_title(title).encode()).hexdigest()
 
 
+def _word_overlap(t1: str, t2: str) -> float:
+    """Jaccard similarity on lowercase words ≥4 chars (ignores stop words)."""
+    w1 = set(re.findall(r'\b[a-z]{4,}\b', t1.lower()))
+    w2 = set(re.findall(r'\b[a-z]{4,}\b', t2.lower()))
+    if not w1 or not w2:
+        return 0.0
+    return len(w1 & w2) / len(w1 | w2)
+
+
+def _fuzzy_dedup_batch(df: pd.DataFrame, threshold: float = 0.70) -> pd.DataFrame:
+    """Within-batch dedup: drop articles whose title is >threshold similar to an
+    already-accepted article. Keeps the most recent of near-duplicates."""
+    if df.empty:
+        return df
+    df = df.sort_values("timestamp", ascending=False).reset_index(drop=True)
+    kept: list[int] = []
+    kept_titles: list[str] = []
+    for i, row in df.iterrows():
+        t = row["title"]
+        if any(_word_overlap(t, kt) >= threshold for kt in kept_titles):
+            continue
+        kept.append(i)
+        kept_titles.append(t)
+    dropped = len(df) - len(kept)
+    if dropped:
+        logger.info(f"fuzzy_dedup_batch: removed {dropped} near-duplicate(s)")
+    return df.loc[kept].reset_index(drop=True)
+
+
+def _fuzzy_dedup_against_existing(
+    new_df: pd.DataFrame, filepath: Path, threshold: float = 0.70, recent_n: int = 200
+) -> pd.DataFrame:
+    """Drop new articles that are near-duplicates of recent existing ones."""
+    if not filepath.exists() or new_df.empty:
+        return new_df
+    try:
+        existing = pd.read_parquet(filepath, columns=["title"]).tail(recent_n)
+        existing_titles = existing["title"].tolist()
+        keep = [
+            not any(_word_overlap(row["title"], et) >= threshold for et in existing_titles)
+            for _, row in new_df.iterrows()
+        ]
+        dropped = len(new_df) - sum(keep)
+        if dropped:
+            logger.info(f"{filepath.name}: fuzzy_dedup removed {dropped} cross-batch duplicate(s)")
+        return new_df[keep].reset_index(drop=True)
+    except Exception as e:
+        logger.warning(f"fuzzy_dedup_against_existing failed: {e}")
+        return new_df
+
+
 def _fetch_rss(url: str, max_results: int = 15) -> list[dict]:
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
@@ -124,7 +175,10 @@ def _fetch_all(feeds: dict, category: str) -> pd.DataFrame:
 
     if not records:
         return pd.DataFrame()
-    return pd.DataFrame(records)
+    df = pd.DataFrame(records)
+    # Within-batch fuzzy dedup: same story from multiple feeds
+    df = _fuzzy_dedup_batch(df, threshold=0.70)
+    return df
 
 
 def _dedup_against_existing(new_df: pd.DataFrame, filepath: Path) -> pd.DataFrame:
@@ -165,6 +219,7 @@ def run() -> None:
                 logger.info(f"{filename}: no data fetched")
                 continue
             df = _dedup_against_existing(df, filepath)
+            df = _fuzzy_dedup_against_existing(df, filepath)
             if df.empty:
                 logger.info(f"{filename}: all already seen")
                 continue
