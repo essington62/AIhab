@@ -1,9 +1,15 @@
 #!/usr/bin/env bash
 # Hourly cycle: ingest → clean → features → scoring → paper trade
-# Cron: 5 * * * * /Users/brown/Documents/MLGeral/btc_AI/scripts/hourly_cycle.sh
+# Disparado por: supercronic (container) ou cron local (dev)
 
 set -euo pipefail
-cd /Users/brown/Documents/MLGeral/btc_AI
+
+# Detecta se está no container (/app) ou no Mac (repo local)
+if [ -d "/app" ]; then
+    cd /app
+else
+    cd "$(dirname "$0")/.."
+fi
 
 LOG_DIR="logs"
 mkdir -p "$LOG_DIR"
@@ -14,10 +20,10 @@ echo "=== Hourly cycle start: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 
 # 1. Data ingestion
 python -m src.data.binance_spot
-python -m src.data.coinglass_futures    # cross-exchange OI/funding/taker (replaces binance_futures)
-python -m src.data.binance_ls           # top L/S account + position (Binance only, not on CoinGlass)
+python -m src.data.coinglass_futures    # cross-exchange OI/funding/taker
+python -m src.data.binance_ls           # top L/S account + position (whale tracking)
 python -m src.data.news_ingest
-python -m src.data.news_classify   # DeepSeek classify → news_scores.parquet
+python -m src.data.news_classify        # DeepSeek classify → news_scores.parquet
 
 # 2. Clean raw → intermediate
 python -m src.data.clean

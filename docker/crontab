@@ -1,10 +1,10 @@
-# AI.hab Production Crontab
-# All times UTC
+SHELL=/bin/bash
 
-# Hourly cycle (minuto 5)
-5 * * * * cd /app && /usr/local/bin/python -m src.data.binance_spot >> /app/logs/hourly.log 2>&1 && /usr/local/bin/python -m src.data.coinglass_futures >> /app/logs/hourly.log 2>&1 && /usr/local/bin/python -m src.data.news_ingest >> /app/logs/hourly.log 2>&1 && /usr/local/bin/python -m src.data.news_classify >> /app/logs/hourly.log 2>&1 && /usr/local/bin/python -m src.data.clean >> /app/logs/hourly.log 2>&1 && /usr/local/bin/python -m src.features.technical >> /app/logs/hourly.log 2>&1 && /usr/local/bin/python -m src.features.gate_features >> /app/logs/hourly.log 2>&1 && /usr/local/bin/python -m src.trading.paper_trader >> /app/logs/hourly.log 2>&1
+# AI.hab Production Crontab — supercronic format (standard cron syntax)
+# All times UTC. PYTHONPATH e TZ herdados do container via supercronic.
+
+# Hourly cycle (minuto 5 de cada hora)
+5 * * * * /app/scripts/hourly_cycle.sh
 
 # Daily update (07:00 UTC)
-0 7 * * * cd /app && /usr/local/bin/python -m src.data.binance_spot --timeframe 1d >> /app/logs/daily.log 2>&1 && /usr/local/bin/python -m src.data.fred_ingest >> /app/logs/daily.log 2>&1 && /usr/local/bin/python -m src.data.coinglass_ingest >> /app/logs/daily.log 2>&1 && /usr/local/bin/python -m src.data.altme_ingest >> /app/logs/daily.log 2>&1 && /usr/local/bin/python -m src.data.market_context >> /app/logs/daily.log 2>&1 && /usr/local/bin/python -m src.models.r5c_hmm >> /app/logs/daily.log 2>&1 && /usr/local/bin/python -m src.data.clean >> /app/logs/daily.log 2>&1 && /usr/local/bin/python -m src.features.gate_features >> /app/logs/daily.log 2>&1
-
-# Empty line required at end
+0 7 * * * /app/scripts/daily_update.sh

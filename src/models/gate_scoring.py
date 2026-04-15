@@ -380,6 +380,8 @@ def run_scoring_pipeline(
             "signal": "BLOCK",
             "block_reason": g0["block_reason"],
             "score": None,
+            "score_raw": None,
+            "regime_multiplier": 0.0,
             "threshold": None,
             "gate_scores": {},
             "clusters": {},
@@ -415,6 +417,8 @@ def run_scoring_pipeline(
             "signal": "BLOCK",
             "block_reason": "BLOCK_STALE_DATA",
             "score": None,
+            "score_raw": None,
+            "regime_multiplier": g0["multiplier"],
             "threshold": None,
             "gate_scores": gates,
             "clusters": {},
@@ -473,7 +477,9 @@ def run_scoring_pipeline(
     return {
         "signal": signal,
         "block_reason": block_reason,
-        "score": total_score,
+        "score": total_score,           # post-G0-multiplier (decision score)
+        "score_raw": cluster_result["total_score"],  # pre-multiplier cluster sum
+        "regime_multiplier": multiplier,
         "threshold": threshold,
         "gate_scores": gate_scores,
         "clusters": cluster_result["clusters"],

@@ -135,7 +135,9 @@ def append_score_history(result: dict) -> None:
 
     row = pd.DataFrame([{
         "timestamp": pd.Timestamp.utcnow(),
-        "total_score": result["score"],
+        "total_score": result["score"],           # post-G0-multiplier (decision score)
+        "score_raw": result.get("score_raw"),     # pre-multiplier cluster sum
+        "regime_multiplier": result.get("regime_multiplier"),
         "threshold": result.get("threshold"),
         "signal": result.get("signal"),
         "block_reason": result.get("block_reason"),
@@ -295,7 +297,9 @@ def run_cycle() -> dict:
 
     # 11b. Stamp last_signal/score/threshold/regime onto portfolio state
     portfolio["last_signal"] = result.get("signal")
-    portfolio["last_score"] = result.get("score")
+    portfolio["last_score"] = result.get("score")          # post-G0-multiplier
+    portfolio["last_score_raw"] = result.get("score_raw")  # pre-multiplier cluster sum
+    portfolio["last_regime_multiplier"] = result.get("regime_multiplier")
     portfolio["last_threshold"] = result.get("threshold")
     portfolio["last_regime"] = regime
     portfolio["updated_at"] = str(cycle_ts)

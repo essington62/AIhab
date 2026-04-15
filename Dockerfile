@@ -2,10 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System dependencies
+# System dependencies + supercronic (container-native cron: herda env, loga no stdout)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cron \
-    && rm -rf /var/lib/apt/lists/*
+    curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://github.com/aptible/supercronic/releases/download/v0.2.33/supercronic-linux-amd64 \
+       -o /usr/local/bin/supercronic \
+    && chmod +x /usr/local/bin/supercronic
 
 # Python dependencies
 COPY environment_docker.txt .
@@ -24,10 +27,11 @@ RUN mkdir -p data/{01_raw/{spot,futures,macro,coinglass,sentiment,news,market},0
 # Make scripts executable
 RUN chmod +x scripts/*.sh
 
-# Crontab setup
+# Crontab
 COPY crontab /etc/cron.d/aihab-cron
-RUN chmod 0644 /etc/cron.d/aihab-cron \
-    && crontab /etc/cron.d/aihab-cron
 
-# Default: run cron in foreground
-CMD ["cron", "-f"]
+# PYTHONPATH baked in — visible to supercronic jobs and any python -m call
+ENV PYTHONPATH=/app
+
+# supercronic: runs in foreground, inherits env, logs to stdout (capturado por docker logs)
+CMD ["supercronic", "/etc/cron.d/aihab-cron"]

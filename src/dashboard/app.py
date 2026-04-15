@@ -285,12 +285,12 @@ def compute_clusters(zs: dict, bb_pct: float, rsi_14: float, portfolio: dict) ->
 
     # G4 OI, G9 taker, G10 funding
     g4  = _tanh_score(g("oi_z"),         *gp.get("g4_oi",       [-0.472, 0.8, 2.0]))
-    g9  = _tanh_score(g("taker_z"),      *gp.get("g9_taker",    [ 0.143, 0.5, 0.5]))
+    g9  = _tanh_score(g("taker_z"),      *gp.get("g9_taker",    [ 0.143, 0.5, 0.3]))
     g10 = _tanh_score(g("funding_z"),    *gp.get("g10_funding",  [-0.064, 0.4, 0.5]))
 
     # G5 stable, G7 ETF, G6 bubble, G8 F&G
-    g5  = _tanh_score(g("stablecoin_z"), *gp.get("g5_stable",   [ 0.326, 0.6, 1.0]))
-    g7  = _tanh_score(g("etf_z"),        *gp.get("g7_etf",       [ 0.263, 0.6, 1.0]))
+    g5  = _tanh_score(g("stablecoin_z"), *gp.get("g5_stable",   [ 0.326, 0.6, 1.5]))
+    g7  = _tanh_score(g("etf_z"),        *gp.get("g7_etf",       [ 0.263, 0.6, 1.5]))
     g6  = _tanh_score(g("bubble_z"),     *gp.get("g6_bubble",    [-0.345, 0.7, 1.0]))
     g8  = _tanh_score(g("fg_z"),         *gp.get("g8_fg",        [-0.211, 0.7, 0.8]))
 
@@ -301,13 +301,14 @@ def compute_clusters(zs: dict, bb_pct: float, rsi_14: float, portfolio: dict) ->
     fed_score    = portfolio.get("_fed_score", 0.0)
     g2 = 0.5 * float(crypto_score) + 0.5 * float(fed_score)
 
+    caps = params.get("cluster_caps", {})
     clusters = {
-        "technical":   float(np.clip(g1,             -2.0,  3.5)),
-        "news":        float(np.clip(g2,             -1.5,  1.0)),
-        "macro":       float(np.clip(g3,             -1.5,  1.0)),
-        "positioning": float(np.clip(g4 + g10,       -2.0,  1.5)),
-        "liquidity":   float(np.clip(g5 + g7,        -1.5,  2.5)),
-        "sentiment":   float(np.clip(g6 + g8 + g9,   -1.5,  1.5)),
+        "technical":   float(np.clip(g1,           *caps.get("technical",   [-2.0,  3.5]))),
+        "news":        float(np.clip(g2,           *caps.get("news",        [-1.5,  1.0]))),
+        "macro":       float(np.clip(g3,           *caps.get("macro",       [-1.5,  1.0]))),
+        "positioning": float(np.clip(g4 + g10,     *caps.get("positioning", [-2.0,  1.5]))),
+        "liquidity":   float(np.clip(g5 + g7,      *caps.get("liquidity",   [-1.5,  2.5]))),
+        "sentiment":   float(np.clip(g6 + g8 + g9, *caps.get("sentiment",   [-1.5,  1.5]))),
     }
     details = {
         "technical":   {"bb_pct": bb_pct, "rsi_14": rsi_14, "bb_s": bb_s, "rsi_s": rsi_s, "g1_raw": g1},
@@ -612,7 +613,43 @@ def main():
 
     fomc = get_fomc_proximity(cal)
     clusters, cdet = compute_clusters(zs, bb_pct or 0.5, rsi_14 or 50.0, portfolio)
-    total_score = sum(clusters.values())
+    total_score_raw = round(sum(clusters.values()), 4)
+
+    # Apply G0 regime multiplier (mirrors gate_scoring.py: Bear=0, Sideways=0.5, Bull=1.0)
+    regime_multiplier = {"Sideways": 0.5, "Bear": 0.0, "Bull": 1.0}.get(regime, 1.0)
+    total_score = round(total_score_raw * regime_multiplier, 4)
+
+    # Re-evaluate kill switches on fresh data (mirrors gate_scoring.check_kill_switches)
+    # Result: signal_computed is consistent with total_score shown in the body
+    _ks = load_params().get("kill_switches", {})
+    _news_d = cdet.get("news", {})
+    _g2_raw = (0.5 * float(_news_d.get("crypto_score") or 0)
+               + 0.5 * float(_news_d.get("fed_score") or 0))
+    _oi_z = float(zs.get("oi_z") or 0)
+    _fomc_kill = (
+        float(_news_d.get("fed_score") or 0) < _ks.get("g2_fed_fomc_threshold", -1.0)
+        and fomc.get("days_away", 9999) <= 2
+        and fomc.get("event_type") == "fomc_decision"
+    )
+
+    if regime == "Bear":
+        signal_computed, block_reason_computed = "BLOCK", "BLOCK_BEAR_REGIME"
+    elif (bb_pct or 0) >= _ks.get("bb_top_threshold", 0.80):
+        signal_computed, block_reason_computed = "BLOCK", "BLOCK_BB_TOP"
+    elif _oi_z > _ks.get("oi_extreme_z", 2.5):
+        signal_computed, block_reason_computed = "BLOCK", "BLOCK_OI_EXTREME"
+    elif _g2_raw < _ks.get("news_bear_score", -3.0):
+        signal_computed, block_reason_computed = "BLOCK", "BLOCK_NEWS_BEAR"
+    elif _fomc_kill:
+        signal_computed, block_reason_computed = "BLOCK", "BLOCK_FED_HAWKISH"
+    elif total_score >= threshold:
+        signal_computed, block_reason_computed = "ENTER", None
+    else:
+        signal_computed, block_reason_computed = "HOLD", None
+
+    # score and signal both freshly computed — single source of truth
+    score = total_score
+    signal = signal_computed
 
     # L/S whale
     ls_account_val = _latest(lsa_df, "longShortRatio", 1.0)
@@ -658,8 +695,13 @@ def main():
     regime_c  = {"Bull": "pos", "Bear": "neg", "Sideways": "warn"}.get(regime, "neut")
     fed_note  = f"Fed: {fomc['next_event']} em {fomc['days_away']}d" if fomc["next_event"] else "Fed: sem eventos próximos"
     cycle_info = get_last_cycle_info()
-    cycle_age  = f"{cycle_info['age_min']:.0f}min atrás" if cycle_info else "N/A"
-    cycle_ok   = "✅" if cycle_info and cycle_info.get("age_min", 99) < 75 else "⚠️"
+    if not cycle_info:
+        cycle_age = "nunca executou"
+        cycle_ok  = "🔴"
+    else:
+        age_m = cycle_info["age_min"]
+        cycle_age = f"{age_m:.0f}min atrás"
+        cycle_ok  = "✅" if age_m < 90 else ("⚠️" if age_m < 180 else "🔴")
 
     # MA200 header snippet (pre-built to avoid backslash in f-string)
     if ma200_val:
@@ -694,9 +736,40 @@ def main():
     # =========================================================================
     st.markdown("### Gate Scoring v2")
 
-    # Score bar
+    # Score bar — color driven by signal_computed (kill switches already applied)
     score_pct = min(max((total_score / threshold) * 100, 0), 110) if threshold > 0 else 0
-    bar_color = "#3fb950" if total_score >= threshold else ("#d29922" if total_score > threshold * 0.6 else "#f85149")
+    if signal_computed == "BLOCK":
+        bar_color = "#f85149"
+    elif signal_computed == "ENTER":
+        bar_color = "#3fb950"
+    elif total_score > threshold * 0.6:
+        bar_color = "#d29922"
+    else:
+        bar_color = "#f85149"
+
+    # Regime multiplier breakdown (only shown when multiplier != 1.0)
+    if regime_multiplier != 1.0:
+        mult_label = f"× Regime {regime} ({regime_multiplier}×)"
+        multiplier_html = (
+            f'<div style="display:flex; justify-content:space-between; font-size:12px; '
+            f'color:#8b949e; margin-top:4px;">'
+            f'<span>Σ clusters (bruto): {total_score_raw:+.3f}</span>'
+            f'<span style="color:#d29922;">{mult_label} = '
+            f'<b style="color:{bar_color};">{total_score:+.3f}</b></span>'
+            f'</div>'
+        )
+    else:
+        multiplier_html = ""
+
+    # Kill switch banner (only when BLOCK is from a kill switch, not from Bear/score)
+    if signal_computed == "BLOCK" and block_reason_computed and block_reason_computed != "BLOCK_BEAR_REGIME":
+        ks_html = (
+            f'<div style="margin-top:6px; padding:4px 8px; background:#3d1a1a; border-radius:4px; '
+            f'font-size:12px; color:#f85149;">⛔ Kill switch: {block_reason_computed}</div>'
+        )
+    else:
+        ks_html = ""
+
     st.markdown(f"""
 <div class="score-bar-wrap">
   <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
@@ -707,6 +780,8 @@ def main():
   <div style="background:#21262d; border-radius:4px; height:8px; width:100%;">
     <div style="background:{bar_color}; width:{min(score_pct,100):.1f}%; height:8px; border-radius:4px;"></div>
   </div>
+  {multiplier_html}
+  {ks_html}
 </div>
 """, unsafe_allow_html=True)
 
