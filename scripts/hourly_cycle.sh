@@ -15,6 +15,7 @@ echo "=== Hourly cycle start: $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 # 1. Data ingestion
 python -m src.data.binance_spot
 python -m src.data.coinglass_futures    # cross-exchange OI/funding/taker (replaces binance_futures)
+python -m src.data.binance_ls           # top L/S account + position (Binance only, not on CoinGlass)
 python -m src.data.news_ingest
 python -m src.data.news_classify   # DeepSeek classify → news_scores.parquet
 
