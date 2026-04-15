@@ -1083,6 +1083,126 @@ def main():
 </div>""", unsafe_allow_html=True)
 
     # =========================================================================
+    # SECTION 9: FED OBSERVATORY
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 🏛️ Fed Observatory")
+    st.caption("Probabilidades estimadas (proxy DGS2, não FedWatch)")
+
+    try:
+        from src.features.fed_observatory import load_fed_data, estimate_rate_probability, get_scenario_analysis
+
+        _fed_data = load_fed_data()
+        _prob = estimate_rate_probability(_fed_data)
+        _analysis = get_scenario_analysis(_prob)
+
+        # --- Probability cards ---
+        col_fo1, col_fo2, col_fo3 = st.columns(3)
+        with col_fo1:
+            _pct = _prob["prob_cut"] * 100
+            _col = "#3fb950" if _pct > 30 else "#8b949e"
+            st.markdown(f"""
+<div class="cg-card">
+  <div class="cg-card-title">CORTE 25bps</div>
+  <div class="cg-card-value" style="color:{_col};">{_pct:.0f}%</div>
+  <div class="cg-card-sub">BTC: Bullish</div>
+</div>""", unsafe_allow_html=True)
+
+        with col_fo2:
+            _pct = _prob["prob_hold"] * 100
+            st.markdown(f"""
+<div class="cg-card">
+  <div class="cg-card-title">MANUTENÇÃO</div>
+  <div class="cg-card-value" style="color:#8b949e;">{_pct:.0f}%</div>
+  <div class="cg-card-sub">BTC: Neutro</div>
+</div>""", unsafe_allow_html=True)
+
+        with col_fo3:
+            _pct = _prob["prob_hike"] * 100
+            _col = "#f85149" if _pct > 10 else "#8b949e"
+            st.markdown(f"""
+<div class="cg-card">
+  <div class="cg-card-title">ALTA 25bps</div>
+  <div class="cg-card-value" style="color:{_col};">{_pct:.0f}%</div>
+  <div class="cg-card-sub">BTC: Bearish</div>
+</div>""", unsafe_allow_html=True)
+
+        # --- Indicators ---
+        _ind = _prob.get("indicators", {})
+        _ind_cols = st.columns(5)
+        _ind_list = [
+            ("DGS2",        _ind.get("dgs2"),         "%",   _ind.get("dgs2_change_30d")),
+            ("EFFR",        _ind.get("effr"),          "%",   None),
+            ("Spread vs Fed", _ind.get("spread_vs_fed"), "bps", None),
+            ("Inflation 5Y",  _ind.get("inflation_5y"),  "%",   _ind.get("inflation_5y_change_30d")),
+            ("Inflation 10Y", _ind.get("inflation_10y"), "%",   None),
+        ]
+        for _i, (_name, _val, _unit, _change) in enumerate(_ind_list):
+            with _ind_cols[_i]:
+                if _val is not None:
+                    if _unit == "bps":
+                        st.metric(_name, f"{_val*100:+.0f}bps")
+                    else:
+                        st.metric(_name, f"{_val:.2f}%",
+                                  delta=f"{_change:+.2f}" if _change is not None else None)
+                else:
+                    st.metric(_name, "N/A")
+
+        # --- Scenarios ---
+        st.markdown("**Cenários por decisão:**")
+        _color_map = {"green": "#3fb950", "gray": "#8b949e", "red": "#f85149"}
+        for _sc in _analysis["scenarios"]:
+            _bc = _color_map.get(_sc["color"], "#8b949e")
+            st.markdown(f"""
+<div style="background:#161b22; border-left:3px solid {_bc};
+            padding:10px 15px; margin:5px 0; border-radius:4px;">
+  <strong>{_sc["name"]}</strong> — {_sc["probability"]}
+  <br><span style="font-size:0.85em; color:#8b949e;">
+  Impacto BTC: {_sc["btc_impact"]} | Ação: {_sc["action"]}
+  </span>
+  <br><span style="font-size:0.8em; color:#6e7681;">{_sc["description"]}</span>
+</div>""", unsafe_allow_html=True)
+
+        # --- Member sentiment (if available) ---
+        if _analysis.get("member_summary"):
+            _ms = _analysis["member_summary"]
+            st.markdown(
+                f"**Membros Fed (últimos 30 dias):** "
+                f"🔴 Hawkish: {_ms['hawkish']} | "
+                f"🟢 Dovish: {_ms['dovish']} | "
+                f"⚪ Neutro: {_ms['neutral']} "
+                f"→ Tendência: **{_ms['trend']}**"
+            )
+
+        # --- Fed agenda ---
+        try:
+            import json as _json
+            with open("conf/fed_calendar.json") as _f:
+                _cal = _json.load(_f)
+            _now_ts = pd.Timestamp.now(tz="UTC")
+            _all_events = []
+            for _d in _cal.get("fomc_decisions", []):
+                _all_events.append({"date": _d, "type": "FOMC Decision"})
+            for _e in _cal.get("hearings", []):
+                _all_events.append({"date": _e["date"], "type": f"{_e['type']} ({_e.get('member','')})"})
+            for _e in _cal.get("transitions", []):
+                _all_events.append({"date": _e["date"], "type": f"{_e['type']} ({_e.get('member','')})"})
+            _upcoming = sorted(
+                [e for e in _all_events if pd.to_datetime(e["date"]) > _now_ts],
+                key=lambda x: x["date"]
+            )[:5]
+            if _upcoming:
+                st.markdown("**Agenda Fed:**")
+                for _e in _upcoming:
+                    _days = (pd.to_datetime(_e["date"]) - _now_ts).days
+                    st.markdown(f"📅 {_e['date']} — {_e['type']} ({_days}d)")
+        except Exception:
+            pass
+
+    except Exception as _e:
+        st.warning(f"Fed Observatory indisponível: {_e}")
+
+    # =========================================================================
     # SECTION 7: SYSTEM HEALTH
     # =========================================================================
     st.markdown("---")

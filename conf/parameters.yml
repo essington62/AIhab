@@ -125,6 +125,8 @@ news:
 # Fed Sentinel proximity adjustments (added to threshold)
 # ---------------------------------------------------------------------------
 fed:
+  current_rate: "3.50-3.75"
+  current_rate_mid: 3.625
   proximity_adjustments:
     fomc_decision_t0_t2: 1.5      # T-2 to T0 FOMC decision
     fomc_decision_t3_t5: 0.7      # T-5 to T-3 FOMC

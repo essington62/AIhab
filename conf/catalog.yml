@@ -28,6 +28,13 @@ raw_futures_taker_4h: "data/01_raw/futures/taker_4h.parquet"
 
 raw_macro: "data/01_raw/macro/fred_daily.parquet"
 
+# Fed Observatory (individual parquets — Fed rate estimation)
+macro_effr:     "data/01_raw/macro/effr.parquet"
+macro_dfedtaru: "data/01_raw/macro/dfedtaru.parquet"
+macro_dfedtarl: "data/01_raw/macro/dfedtarl.parquet"
+macro_t5yie:    "data/01_raw/macro/t5yie.parquet"
+macro_t10yie:   "data/01_raw/macro/t10yie.parquet"
+
 coinglass_stablecoin: "data/01_raw/coinglass/stablecoin_mcap_daily.parquet"
 coinglass_bubble: "data/01_raw/coinglass/bubble_index_daily.parquet"
 coinglass_etf: "data/01_raw/coinglass/etf_flows_daily.parquet"
