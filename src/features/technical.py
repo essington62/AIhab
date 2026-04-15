@@ -23,14 +23,35 @@ logger = logging.getLogger("features.technical")
 # Indicator computation (standalone, no I/O)
 # ---------------------------------------------------------------------------
 
-def compute_bollinger_pct(close: pd.Series, window: int = 20, std: float = 2.0) -> pd.Series:
-    """BB %B: 0 = lower band, 1 = upper band. Clipped [0, 1]."""
+def compute_bollinger(close: pd.Series, window: int = 20, std: float = 2.0) -> pd.DataFrame:
+    """Return DataFrame with bb_upper, bb_middle, bb_lower, bb_pct."""
     ma = close.rolling(window).mean()
     std_dev = close.rolling(window).std()
     upper = ma + std * std_dev
     lower = ma - std * std_dev
     pct = (close - lower) / (upper - lower).replace(0, np.nan)
-    return pct.clip(0, 1)
+    return pd.DataFrame({
+        "bb_upper":  upper,
+        "bb_middle": ma,
+        "bb_lower":  lower,
+        "bb_pct":    pct.clip(0, 1),
+    })
+
+
+def compute_bollinger_pct(close: pd.Series, window: int = 20, std: float = 2.0) -> pd.Series:
+    """BB %B: 0 = lower band, 1 = upper band. Clipped [0, 1]. (Legacy — kept for compat.)"""
+    return compute_bollinger(close, window, std)["bb_pct"]
+
+
+def compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14) -> pd.Series:
+    """Average True Range (Wilder's smoothing via EWM span=window)."""
+    prev_close = close.shift(1)
+    tr = pd.concat([
+        high - low,
+        (high - prev_close).abs(),
+        (low  - prev_close).abs(),
+    ], axis=1).max(axis=1)
+    return tr.ewm(span=window, min_periods=window, adjust=False).mean()
 
 
 def compute_rsi(close: pd.Series, window: int = 14) -> pd.Series:
@@ -46,15 +67,36 @@ def compute_ma(close: pd.Series, window: int) -> pd.Series:
 
 
 def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Add bb_pct, rsi_14, and MAs to a OHLCV DataFrame. Returns modified copy."""
+    """Add BB bands, RSI, MAs, ATR, and rolling highs/lows to a OHLCV DataFrame."""
     params = get_params()["technical"]
     close = df["close"].astype(float)
+    high  = df["high"].astype(float)  if "high"  in df.columns else close
+    low   = df["low"].astype(float)   if "low"   in df.columns else close
 
     df = df.copy()
-    df["bb_pct"] = compute_bollinger_pct(close, params["bb_window"], params["bb_std"])
+
+    # Bollinger Bands (all four columns)
+    bb = compute_bollinger(close, params["bb_window"], params["bb_std"])
+    df["bb_upper"]  = bb["bb_upper"]
+    df["bb_middle"] = bb["bb_middle"]
+    df["bb_lower"]  = bb["bb_lower"]
+    df["bb_pct"]    = bb["bb_pct"]
+
+    # RSI
     df["rsi_14"] = compute_rsi(close, params["rsi_window"])
+
+    # Moving averages
     for w in params["ma_windows"]:
         df[f"ma_{w}"] = compute_ma(close, w)
+
+    # ATR-14
+    df["atr_14"] = compute_atr(high, low, close, 14)
+
+    # Rolling high/low lookback windows (in hourly candles: 7d=168h, 30d=720h)
+    df["high_7d"]  = high.rolling(168).max()
+    df["low_7d"]   = low.rolling(168).min()
+    df["high_30d"] = high.rolling(720).max()
+    df["low_30d"]  = low.rolling(720).min()
 
     return df
 
@@ -81,16 +123,27 @@ def get_latest_technical() -> dict:
     df = df.sort_values("timestamp")
     latest = df.iloc[-1]
 
+    def _f(col):
+        return float(latest[col]) if col in latest.index and not pd.isna(latest[col]) else None
+
     result = {
-        "timestamp": latest["timestamp"],
-        "close": float(latest["close"]),
-        "bb_pct": float(latest["bb_pct"]) if not pd.isna(latest.get("bb_pct")) else None,
-        "rsi_14": float(latest["rsi_14"]) if not pd.isna(latest.get("rsi_14")) else None,
+        "timestamp":  latest["timestamp"],
+        "close":      float(latest["close"]),
+        "bb_pct":     _f("bb_pct"),
+        "bb_upper":   _f("bb_upper"),
+        "bb_middle":  _f("bb_middle"),
+        "bb_lower":   _f("bb_lower"),
+        "rsi_14":     _f("rsi_14"),
+        "atr_14":     _f("atr_14"),
+        "high_7d":    _f("high_7d"),
+        "low_7d":     _f("low_7d"),
+        "high_30d":   _f("high_30d"),
+        "low_30d":    _f("low_30d"),
     }
     params = get_params()["technical"]
     for w in params["ma_windows"]:
         col = f"ma_{w}"
-        result[col] = float(latest[col]) if col in latest.index and not pd.isna(latest[col]) else None
+        result[col] = _f(col)
 
     logger.info(
         f"Latest technical: close={result['close']:.2f}, "

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Hourly cycle: ingest → clean → features → scoring → paper trade
-# Disparado por: supercronic (container) ou cron local (dev)
+# Container:  supercronic chama diretamente (PYTHONPATH=/app já no ENV)
+# Dev local:  conda run -n btc_trading_v1 bash scripts/hourly_cycle.sh
 
 set -euo pipefail
 

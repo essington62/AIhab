@@ -25,6 +25,12 @@ sys.path.insert(0, str(ROOT))
 
 from src.config import get_credential, get_params, get_path
 
+try:
+    from src.features.fed_observatory import estimate_rate_probability, load_fed_data
+    _FED_OBS_AVAILABLE = True
+except Exception:
+    _FED_OBS_AVAILABLE = False
+
 st.set_page_config(
     page_title="btc-trading-v1",
     page_icon="₿",
@@ -312,8 +318,9 @@ def compute_clusters(zs: dict, bb_pct: float, rsi_14: float, portfolio: dict) ->
     }
     details = {
         "technical":   {"bb_pct": bb_pct, "rsi_14": rsi_14, "bb_s": bb_s, "rsi_s": rsi_s, "g1_raw": g1},
-        "news":        {"crypto_score": crypto_score, "macro_score": macro_score, "fed_score": fed_score},
-        "macro":       {"dgs10_z": g("dgs10_z"), "curve_z": g("curve_z"), "rrp_z": g("rrp_z"), "dgs2_z": g("dgs2_z")},
+        "news":        {"crypto_score": crypto_score, "macro_score": macro_score, "fed_score": fed_score, "g2_raw": g2},
+        "macro":       {"dgs10_z": g("dgs10_z"), "curve_z": g("curve_z"), "rrp_z": g("rrp_z"), "dgs2_z": g("dgs2_z"),
+                        "g3_dgs10": g3_dgs10, "g3_curve": g3_curve, "g3_rrp": g3_rrp, "g3_dgs2": g3_dgs2, "g3_raw": g3},
         "positioning": {"oi_z": g("oi_z"), "funding_z": g("funding_z"), "g4": g4, "g10": g10},
         "liquidity":   {"stablecoin_z": g("stablecoin_z"), "etf_z": g("etf_z"), "g5": g5, "g7": g7},
         "sentiment":   {"bubble_z": g("bubble_z"), "fg_z": g("fg_z"), "taker_z": g("taker_z"), "g6": g6, "g8": g8, "g9": g9},
@@ -325,93 +332,94 @@ def compute_clusters(zs: dict, bb_pct: float, rsi_14: float, portfolio: dict) ->
 # ---------------------------------------------------------------------------
 
 def interpret_cluster(name: str, score: float, det: dict, zs: dict) -> str:
+    """Linha 2 dos cards: narrativa pura, sem repetir números (esses ficam no sub/linha 1)."""
     def z(k): return zs.get(k) or 0.0
 
     if name == "technical":
         bb = det.get("bb_pct", 0.5)
         rsi = det.get("rsi_14", 50)
         if bb > 0.80:
-            return f"⛔ BB={bb:.2f} — Kill switch ativado. Preço no topo da banda, zona de sobrecompra extrema"
+            return "⛔ Kill switch ativado — preço no topo da banda, zona de sobrecompra extrema"
         if bb < 0.20:
-            return f"🟢 BB={bb:.2f} — Preço na base da banda. Win rate histórico 88% em 3d"
+            return "🟢 Base da banda — win rate histórico 88% em 3d"
         if bb < 0.30:
-            return f"🟢 BB={bb:.2f} — Próximo da banda inferior. Win rate histórico 77%"
+            return "🟢 Próximo da banda inferior — win rate histórico 77%"
         if rsi < 35:
-            return f"RSI={rsi:.0f} — Sobrevenda. Mercado stretched pra baixo"
+            return "Sobrevenda — mercado stretched pra baixo"
         if rsi > 60:
-            return f"RSI={rsi:.0f} — Momentum comprador elevado, monitorar reversão"
-        return f"BB={bb:.2f} RSI={rsi:.0f} — Neutro, preço no meio da banda sem sinal direcional"
+            return "Momentum comprador elevado — monitorar reversão"
+        return "Neutro — preço no meio da banda, sem sinal direcional"
 
     if name == "positioning":
         oi_z = det.get("oi_z", 0)
         fund_z = det.get("funding_z", 0)
         if oi_z > 2.0:
-            return f"⚠️ Alavancagem extrema (OI {oi_z:.1f}σ). Alto risco de liquidação em cascata se preço ceder"
+            return "⚠️ Alavancagem extrema — alto risco de liquidação em cascata se preço ceder"
         if oi_z > 1.0:
-            return f"OI {oi_z:.1f}σ acima da média — mercado alavancado, risco elevado de long squeeze"
+            return "Mercado alavancado — risco elevado de long squeeze"
         if oi_z < -1.0:
-            return f"OI {oi_z:.1f}σ — mercado desalavancado. Base limpa, favorável pra subida"
+            return "Mercado desalavancado — base limpa, favorável pra subida"
         if fund_z > 1.5:
-            return f"Funding {fund_z:.1f}σ — longs pagando muito. Mercado crowded long, risco de squeeze"
+            return "Longs pagando muito — mercado crowded, risco de squeeze"
         if fund_z < -1.5:
-            return f"Funding negativo — shorts pagando. Potencial short squeeze"
-        return f"OI z={oi_z:.2f} | Funding z={fund_z:.2f} — alavancagem dentro da normalidade"
+            return "Shorts pagando — potencial short squeeze"
+        return "Alavancagem dentro da normalidade"
 
     if name == "macro":
         dgs10_z = z("dgs10_z")
         curve_z = z("curve_z")
         if dgs10_z > 1.0 and curve_z < -0.5:
-            return f"Juros altos (DGS10 {dgs10_z:.1f}σ) com curva invertendo ({curve_z:.1f}σ) — ambiente restritivo pra risco"
+            return "Juros altos com curva invertendo — ambiente restritivo pra risco"
         if dgs10_z > 1.0:
-            return f"DGS10 {dgs10_z:.1f}σ acima da média — juros elevados pressionam ativos de risco"
+            return "Juros acima da média — pressão sobre ativos de risco"
         if dgs10_z < -1.0:
-            return f"Juros caindo ({dgs10_z:.1f}σ) — expectativa de afrouxamento monetário favorece BTC"
+            return "Juros em queda — expectativa de afrouxamento favorece BTC"
         if curve_z < -1.0:
-            return f"Curva de juros invertendo ({curve_z:.1f}σ) — sinal clássico de stress econômico"
-        return f"DGS10 z={dgs10_z:.2f} | Curve z={curve_z:.2f} — macro dentro da normalidade"
+            return "Curva de juros invertendo — sinal clássico de stress econômico"
+        return "Macro dentro da normalidade"
 
     if name == "liquidity":
         stab_z = z("stablecoin_z")
         etf_z  = z("etf_z")
         if stab_z > 1.0 and etf_z > 0.5:
-            return f"🟢 Liquidez entrando — stablecoins crescendo ({stab_z:.1f}σ) e ETFs com inflows ({etf_z:.1f}σ)"
+            return "🟢 Liquidez entrando — stablecoins crescendo e ETFs com inflows"
         if stab_z < -1.0:
-            return f"Stablecoins contraindo ({stab_z:.1f}σ) — capital saindo do ecossistema crypto. Menos combustível"
+            return "Stablecoins contraindo — capital saindo do ecossistema, menos combustível"
         if etf_z > 1.0:
-            return f"ETF inflows forte ({etf_z:.1f}σ) — institucional comprando"
+            return "ETF inflows forte — institucional comprando"
         if etf_z < -1.0:
-            return f"ETF outflows ({etf_z:.1f}σ) — institucional reduzindo exposição"
-        return f"Stablecoin z={stab_z:.2f} | ETF z={etf_z:.2f} — liquidez dentro da normalidade"
+            return "ETF outflows — institucional reduzindo exposição"
+        return "Liquidez dentro da normalidade"
 
     if name == "sentiment":
         taker_z  = z("taker_z")
         bubble_z = z("bubble_z")
         fg_z     = z("fg_z")
         if taker_z < -2.0:
-            return f"⚠️ Pressão vendedora extrema nos futuros (taker {taker_z:.1f}σ) — retail vendendo agressivamente"
+            return "⚠️ Pressão vendedora extrema nos futuros — retail vendendo agressivamente"
         if taker_z > 2.0:
-            return f"Compra agressiva nos futuros (taker {taker_z:.1f}σ) — momentum comprador forte"
+            return "Compra agressiva nos futuros — momentum comprador forte"
         if bubble_z > 1.5:
-            return f"Bubble index overextended ({bubble_z:.1f}σ) — mercado sobreaquecido, risco de correção"
+            return "Bubble index overextended — mercado sobreaquecido, risco de correção"
         if fg_z < -1.0:
-            return f"Fear & Greed em medo ({fg_z:.1f}σ) — contrarian bullish. Historicamente bom pra comprar"
+            return "Fear & Greed em medo — contrarian bullish, historicamente bom pra comprar"
         if fg_z > 1.5:
-            return f"Greed elevado ({fg_z:.1f}σ) — mercado complacente, cautela"
-        return f"Taker z={taker_z:.2f} | Bubble z={bubble_z:.2f} | F&G z={fg_z:.2f} — sentimento neutro"
+            return "Greed elevado — mercado complacente, cautela"
+        return "Sentimento neutro"
 
     if name == "news":
         cs = det.get("crypto_score", 0)
         ms = det.get("macro_score", 0)
         fs = det.get("fed_score", 0)
         if cs > 3.0:
-            return f"🟢 Notícias crypto muito bullish (score +{cs:.1f}). Catalisador positivo no curto prazo"
+            return "🟢 Notícias crypto muito bullish — catalisador positivo no curto prazo"
         if cs < -3.0:
-            return f"🔴 Notícias crypto bearish (score {cs:.1f}). Sentimento negativo recente"
+            return "🔴 Notícias crypto bearish — sentimento negativo recente"
         if fs < -1.0:
-            return f"Fed hawkish (score {fs:.2f}) — linguagem restritiva nos discursos recentes"
+            return "Fed hawkish — linguagem restritiva nos discursos recentes"
         if ms > 1.0:
-            return f"Macro positiva (score +{ms:.1f}) — ambiente macro favorável"
-        return f"Crypto {cs:+.1f} | Macro {ms:+.1f} | Fed {fs:+.2f} — notícias mistas sem viés claro"
+            return "Macro positiva — ambiente macro favorável"
+        return "Notícias mistas sem viés claro"
 
     return ""
 
@@ -490,48 +498,165 @@ def get_last_cycle_info() -> dict:
 # DeepSeek AI Analyst
 # ---------------------------------------------------------------------------
 
+_DEEPSEEK_SYSTEM_PROMPT = """Você é um analista quantitativo sênior do sistema AI.hab, especializado em trading sistemático de BTC. Sua função é interpretar snapshots do gate scoring v2 e traduzir sinais estatísticos em leitura operacional clara, com foco em Fed, posicionamento institucional (baleias), estrutura de preço e liquidez.
+
+REGRAS ESTRITAS
+- Use APENAS os dados fornecidos no prompt do usuário. Nunca invoque preços históricos específicos, notícias pontuais, ou eventos fora do payload.
+- Nunca dê conselho financeiro direto. Sugestões de ação são sempre sobre o que mudaria o sinal do sistema (ENTER / HOLD / BLOCK), nunca sobre o que o usuário deve fazer com capital próprio.
+- Linguagem probabilística: "sugere", "indica", "é consistente com", "aumenta a probabilidade de". Evite determinismos.
+- Sem emojis exceto os que vêm no payload. Sem hype, sem exclamações.
+- Português do Brasil, técnico mas legível. Markdown nativo (negrito, listas, headers). Sem HTML.
+- Resposta entre 400 e 700 palavras. Se payload for pobre (warmup, dados incompletos), seja mais curto e sinalize.
+
+ESTRUTURA OBRIGATÓRIA (sempre nessa ordem, com headers markdown)
+
+## 1. Regime e Macro
+Leitura do R5C, MA200 (distância e slope), curva de juros (DGS10, DGS2, 2y10y, RRP) e Fed (proximity, posicionamento hawkish/dovish, próximos eventos do payload). Destaque se alguma reunião ou evento do Fed está no horizonte curto (≤7 dias) e como isso ajusta o risco.
+
+## 2. Estrutura de Preço — Suportes e Resistências
+A partir do preço atual, Bollinger Bands (posição dentro da banda), MA200 e níveis derivados do payload, identifique suporte imediato, suporte estrutural, resistência imediata, resistência estrutural e zona de invalidação. Use números concretos. Se um nível não for inferível do payload, diga explicitamente.
+
+## 3. Posicionamento Institucional (Baleias e Derivativos)
+Interprete L/S ratio (accounts e positions), OI z-score, funding rate, taker ratio, ETF flows e stablecoin mcap. Conecte num parágrafo de conclusão sobre quem controla o mercado.
+
+## 4. Sentimento e Notícias
+Fear & Greed (z-score), bubble index, news cluster. Se houver kill switch de notícias ativo, mencionar.
+
+## 5. Leitura do Sinal Atual
+Sinal ENTER/HOLD/BLOCK do payload. Citar: score bruto × multiplicador = score ajustado, comparação com threshold, kill switches ativos (dominam a decisão).
+
+## 6. Gatilhos Específicos para Mudar o Sinal
+Duas condições concretas e mensuráveis que mudariam o sinal para o oposto (preço exato, z-score, nível de RSI, etc.).
+
+CONTEXTO DO SISTEMA
+Gate scoring v2: 11 gates em 6 clusters. Score = Σ clusters × G0 (Bear=0, Sideways=0.5, Bull=1.0). ENTER se score ≥ threshold. Kill switches (BB_TOP ≥0.80, OI_EXTREME z>2.5, NEWS_BEAR <-3, FED_HAWKISH, BEAR_REGIME, MA200 override) forçam BLOCK. Ciclo horário: Binance + CoinGlass + FRED + Alt.me."""
+
+
 def call_deepseek_analyst(context: dict) -> str:
     try:
         api_key = get_credential("deepseek_api_key")
     except Exception:
         return "DeepSeek API key não configurado."
 
-    prompt = f"""Você é um analista quant sênior especializado em Bitcoin e macro.
-Analise o estado atual do mercado BTC e forneça uma análise concisa e acionável.
+    # ── Sinal e score ────────────────────────────────────────────────────────
+    score_raw   = context.get("score_raw", 0) or 0
+    mult        = context.get("regime_multiplier", 1.0) or 1.0
+    score_adj   = context.get("score", 0) or 0
+    block_rsn   = context.get("block_reason") or "nenhum"
 
-=== DADOS ATUAIS ===
-Preço BTC: ${context.get('price', 0):,.0f}
-Variação 24h: {context.get('pct_24h', 0):+.2f}%
+    # ── MA200 ────────────────────────────────────────────────────────────────
+    ma200_val   = context.get("ma200_val")
+    ma200_pct   = context.get("ma200_pct")
+    ma200_slope = context.get("ma200_slope")
+    ma200_line  = (f"MA200: ${ma200_val:,.0f} ({ma200_pct:+.1f}% do preço, "
+                   f"slope 5h {ma200_slope:+.0f})")  if ma200_val else "MA200: indisponível"
+
+    # ── BB ───────────────────────────────────────────────────────────────────
+    bb_upper    = context.get("bb_upper")
+    bb_middle   = context.get("bb_middle")
+    bb_lower    = context.get("bb_lower")
+    bb_line     = (f"BB: lower=${bb_lower:,.0f} / mid=${bb_middle:,.0f} / upper=${bb_upper:,.0f} / "
+                   f"pct={context.get('bb_pct',0):.3f}")  if bb_upper else \
+                  f"BB: pct={context.get('bb_pct',0):.3f} (valores absolutos indisponíveis)"
+
+    # ── MAs ──────────────────────────────────────────────────────────────────
+    _ma50  = context.get("ma50")
+    _ma100 = context.get("ma100")
+    ma_line = "  ".join(
+        f"MA{w}: ${v:,.0f}" for w, v in [("50", _ma50), ("100", _ma100), ("200", context.get("ma200_val"))]
+        if v is not None
+    ) or "MAs: indisponíveis"
+
+    # ── Rolling High/Low ─────────────────────────────────────────────────────
+    _h7  = context.get("high_7d");  _l7  = context.get("low_7d")
+    _h30 = context.get("high_30d"); _l30 = context.get("low_30d")
+    _atr = context.get("atr_14")
+    sr_line = ""
+    if _h7:
+        sr_line += f"Range 7d:  ${_l7:,.0f} — ${_h7:,.0f}\n"
+    if _h30:
+        sr_line += f"Range 30d: ${_l30:,.0f} — ${_h30:,.0f}\n"
+    if _atr:
+        sr_line += f"ATR(14):   ${_atr:,.0f}"
+    if not sr_line:
+        sr_line = "Ranges: indisponíveis"
+
+    # ── Fed events ≤14d ──────────────────────────────────────────────────────
+    fed_events_14d = context.get("fed_events_14d", [])
+    fed_events_str = "\n  ".join(fed_events_14d) if fed_events_14d else "Nenhum evento Fed nos próximos 14 dias"
+
+    # ── Fed Observatory ──────────────────────────────────────────────────────
+    fed_obs     = context.get("fed_obs", {})
+    if fed_obs:
+        fed_obs_line = (f"Prob corte: {fed_obs.get('prob_cut',0):.0%} | "
+                        f"Manutenção: {fed_obs.get('prob_hold',0):.0%} | "
+                        f"Alta: {fed_obs.get('prob_hike',0):.0%} "
+                        f"(confiança: {fed_obs.get('confidence','?')})")
+    else:
+        fed_obs_line = "Fed Observatory: indisponível"
+
+    user_prompt = f"""=== SNAPSHOT AI.hab — {context.get('ts', 'agora')} ===
+
+## PREÇO E REGIME
+Preço BTC: ${context.get('price', 0):,.0f} ({context.get('pct_24h', 0):+.2f}% 24h)
 Regime R5C: {context.get('regime', 'N/A')}
-Sinal Gate v2: {context.get('signal', 'N/A')}
-Score: {context.get('score', 0):.3f} / Threshold: {context.get('threshold', 3.5):.1f}
-Capital: ${context.get('capital', 10000):,.0f} | Posição: {context.get('has_position', False)}
+RSI(14): {context.get('rsi', 50):.1f} | BB pct: {context.get('bb_pct', 0.5):.3f}
+{bb_line}
+{ma_line}
+{ma200_line}
 
-Clusters:
-  Technical:   {context.get('c_technical', 0):.3f}
-  Positioning: {context.get('c_positioning', 0):.3f}
-  Macro:       {context.get('c_macro', 0):.3f}
-  Liquidity:   {context.get('c_liquidity', 0):.3f}
-  Sentiment:   {context.get('c_sentiment', 0):.3f}
-  News:        {context.get('c_news', 0):.3f}
+## SUPORTE E RESISTÊNCIA
+{sr_line}
 
-Z-scores principais:
-  OI: {context.get('oi_z', 0):.2f} | Taker: {context.get('taker_z', 0):.2f} | Funding: {context.get('funding_z', 0):.2f}
-  DGS10: {context.get('dgs10_z', 0):.2f} | Curve: {context.get('curve_z', 0):.2f}
-  Stablecoin: {context.get('stablecoin_z', 0):.2f} | ETF: {context.get('etf_z', 0):.2f}
-  F&G: {context.get('fg_z', 0):.2f} | Bubble: {context.get('bubble_z', 0):.2f}
+## SINAL E SCORE
+Score bruto (Σ clusters): {score_raw:+.4f}
+Multiplicador G0 ({context.get('regime','?')}): ×{mult}
+Score ajustado: {score_adj:+.4f}
+Threshold: {context.get('threshold', 3.5):.3f}
+Decisão: **{context.get('signal', 'N/A')}**
+Kill switch ativo: {block_rsn}
 
-Baleias: L/S={context.get('ls_account', 1):.3f} | {context.get('whale_signal', 'N/A')}
-Fed: {context.get('fed_event', 'N/A')} em {context.get('fed_days', 'N/A')} dias | Proximity adj: +{context.get('fed_adj', 0):.1f}
+## CLUSTERS (contribuição ao score)
+  Technical:   {context.get('c_technical', 0):+.3f}
+  Positioning: {context.get('c_positioning', 0):+.3f}
+  Macro:       {context.get('c_macro', 0):+.3f}
+  Liquidity:   {context.get('c_liquidity', 0):+.3f}
+  Sentiment:   {context.get('c_sentiment', 0):+.3f}
+  News:        {context.get('c_news', 0):+.3f}
 
-=== INSTRUÇÃO ===
-Em 3-5 parágrafos curtos (máximo 300 palavras total):
-1. Avaliação do regime e contexto macro atual
-2. Principal risco e principal oportunidade
-3. Recomendação: manter HOLD ou argumento pra mudar
-4. Um gatilho específico que mudaria o sinal pra ENTER ou BLOCK
+## DERIVATIVOS E POSICIONAMENTO
+OI z-score:      {context.get('oi_z', 0):.2f}
+Funding z-score: {context.get('funding_z', 0):.2f}
+Taker z-score:   {context.get('taker_z', 0):.2f}
+L/S top accounts:  {context.get('ls_account', 1):.3f}
+L/S top positions: {context.get('ls_position', 1):.3f}
+Whale signal: {context.get('whale_signal', 'N/A')}
 
-Seja específico com números. Não repita dados — interprete-os."""
+## LIQUIDEZ E FLUXOS
+Stablecoin mcap z-score: {context.get('stablecoin_z', 0):.2f}
+ETF flows 7d z-score:    {context.get('etf_z', 0):.2f}
+
+## MACRO (z-scores)
+DGS10:      {context.get('dgs10_z', 0):.2f}
+DGS2:       {context.get('dgs2_z', 0):.2f}
+Curva 2y10y:{context.get('curve_z', 0):.2f}
+RRP:        {context.get('rrp_z', 0):.2f}
+
+## FED
+Próximo evento: {context.get('fed_event', 'N/A')} em {context.get('fed_days', '?')} dias
+Proximity adj threshold: {context.get('fed_adj', 0):+.1f}
+{fed_obs_line}
+Eventos Fed ≤14 dias:
+  {fed_events_str}
+
+## SENTIMENTO
+Fear & Greed z-score: {context.get('fg_z', 0):.2f}
+Bubble index z-score: {context.get('bubble_z', 0):.2f}
+News crypto score:    {context.get('crypto_news_score', 0):+.2f}
+News fed score:       {context.get('fed_news_score', 0):+.2f}
+
+---
+Gere a análise estruturada em 6 seções conforme instruído no system prompt."""
 
     try:
         resp = requests.post(
@@ -539,14 +664,41 @@ Seja específico com números. Não repita dados — interprete-os."""
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={
                 "model": "deepseek-chat",
-                "max_tokens": 600,
+                "max_tokens": 2000,
                 "temperature": 0.3,
-                "messages": [{"role": "user", "content": prompt}],
+                "top_p": 0.9,
+                "messages": [
+                    {"role": "system", "content": _DEEPSEEK_SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_prompt},
+                ],
             },
-            timeout=30,
+            timeout=45,
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        data    = resp.json()
+        content = data["choices"][0]["message"]["content"]
+        usage   = data.get("usage", {})
+        finish  = data["choices"][0].get("finish_reason", "")
+        comp_tokens = usage.get("completion_tokens", 0)
+        if finish == "length" or comp_tokens >= 1800:
+            _warn = (
+                f"DeepSeek truncation: finish_reason={finish}, "
+                f"completion_tokens={comp_tokens}, max_tokens=2000"
+            )
+            import logging, pathlib, datetime
+            logging.getLogger("dashboard.deepseek").warning(_warn)
+            try:
+                _log_dir = pathlib.Path("/app/logs") if pathlib.Path("/app").exists() \
+                           else pathlib.Path("logs")
+                _log_dir.mkdir(parents=True, exist_ok=True)
+                _ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+                with open(_log_dir / "deepseek_truncation.log", "a") as _fh:
+                    _fh.write(f"{_ts}  {_warn}\n")
+            except Exception:
+                pass
+            if finish == "length":
+                content = "⚠️ *Análise pode estar incompleta — max_tokens atingido.*\n\n" + content
+        return content
     except Exception as e:
         return f"Erro ao chamar DeepSeek: {e}"
 
@@ -770,12 +922,25 @@ def main():
     else:
         ks_html = ""
 
+    # Threshold tooltip: quantile context from score history
+    if not score_hist.empty and "total_score" in score_hist.columns:
+        _hist_vals = score_hist["total_score"].dropna().tail(90).tolist()
+        if len(_hist_vals) >= 5:
+            _q75 = round(float(np.quantile(_hist_vals, 0.75)), 3)
+            _prox = fomc.get("proximity_adj", 0.0)
+            _threshold_tip = (f"p75 de {len(_hist_vals)} ciclos: {_q75:.3f}"
+                              f" + adj Fed: {_prox:+.1f} = {threshold:.3f}")
+        else:
+            _threshold_tip = f"Warmup — apenas {len(_hist_vals)} ciclos (mín 90)"
+    else:
+        _threshold_tip = "Sem histórico de scores"
+
     st.markdown(f"""
 <div class="score-bar-wrap">
   <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
     <span style="font-size:13px; color:#8b949e;">Score Total</span>
     <span style="font-size:18px; font-weight:700; color:{bar_color};">{total_score:+.3f}</span>
-    <span style="font-size:13px; color:#8b949e;">Threshold: {threshold:.1f}</span>
+    <span style="font-size:13px; color:#8b949e;" title="{_threshold_tip}">Threshold: {threshold:.1f} ⓘ</span>
   </div>
   <div style="background:#21262d; border-radius:4px; height:8px; width:100%;">
     <div style="background:{bar_color}; width:{min(score_pct,100):.1f}%; height:8px; border-radius:4px;"></div>
@@ -796,17 +961,24 @@ def main():
         interp = interpret_cluster(name, sc, d, zs)
 
         if name == "technical":
-            sub = f"BB={d.get('bb_pct',0):.3f} | RSI={d.get('rsi_14',0):.1f}"
+            sub = f"BB: {d.get('bb_s',0):+.1f} | RSI: {d.get('rsi_s',0):+.1f} → G1 bruto: {d.get('g1_raw',0):+.3f}"
         elif name == "positioning":
-            sub = f"OI z={d.get('oi_z',0):.2f} | Fund z={d.get('funding_z',0):.2f}"
+            g4v = d.get('g4', 0); g10v = d.get('g10', 0)
+            sub = f"G4 OI: {g4v:+.3f} | G10 Fund: {g10v:+.3f} → raw: {g4v+g10v:+.3f}"
         elif name == "macro":
-            sub = f"DGS10 z={d.get('dgs10_z',0):.2f} | Curve z={d.get('curve_z',0):.2f}"
+            sub = (f"DGS10: {d.get('g3_dgs10',0):+.3f} | DGS2: {d.get('g3_dgs2',0):+.3f} | "
+                   f"Curve: {d.get('g3_curve',0):+.3f} | RRP: {d.get('g3_rrp',0):+.3f}")
         elif name == "liquidity":
-            sub = f"Stable z={d.get('stablecoin_z',0):.2f} | ETF z={d.get('etf_z',0):.2f}"
+            g5v = d.get('g5', 0); g7v = d.get('g7', 0)
+            sub = f"G5 Stable: {g5v:+.3f} | G7 ETF: {g7v:+.3f} → raw: {g5v+g7v:+.3f}"
         elif name == "sentiment":
-            sub = f"Bubble z={d.get('bubble_z',0):.2f} | F&G z={d.get('fg_z',0):.2f} | Taker z={d.get('taker_z',0):.2f}"
-        else:
-            sub = f"Crypto {d.get('crypto_score',0):+.2f} | Macro {d.get('macro_score',0):+.2f} | Fed {d.get('fed_score',0):+.2f}"
+            sub = (f"G6 Bubble: {d.get('g6',0):+.3f} | G8 F&G: {d.get('g8',0):+.3f} | "
+                   f"G9 Taker: {d.get('g9',0):+.3f}")
+        else:  # news
+            g2r = d.get('g2_raw', 0)
+            cap_note = f" → cap: {sc:+.3f}" if abs(g2r - sc) > 0.005 else ""
+            sub = (f"Crypto {d.get('crypto_score',0):+.2f}×½ + "
+                   f"Fed {d.get('fed_score',0):+.2f}×½ = {g2r:+.3f}{cap_note}")
 
         with cols_c[i % 3]:
             st.markdown(f"""
@@ -824,27 +996,94 @@ def main():
     st.markdown("### 🤖 AI Analyst (DeepSeek)")
 
     if st.button("🔍 Gerar Análise", type="primary"):
+        # Price structure fields from spot_df
+        _bb_upper  = _latest(spot_df, "bb_upper",  None)
+        _bb_middle = _latest(spot_df, "bb_middle", None)
+        _bb_lower  = _latest(spot_df, "bb_lower",  None)
+        _ma50      = _latest(spot_df, "ma_50",     None)
+        _ma99      = _latest(spot_df, "ma_99",     None)
+        _ma200_sp  = _latest(spot_df, "ma_200",    None)  # spot_df value (fallback for ma200_val)
+        _atr_14    = _latest(spot_df, "atr_14",    None)
+        _high_7d   = _latest(spot_df, "high_7d",   None)
+        _low_7d    = _latest(spot_df, "low_7d",    None)
+        _high_30d  = _latest(spot_df, "high_30d",  None)
+        _low_30d   = _latest(spot_df, "low_30d",   None)
+
+        # Fed events in next 14 days from calendar
+        _today = pd.Timestamp.now(tz="UTC").date()
+        _fed_events_14d = []
+        for _ev in (cal.get("fomc_dates", []) + cal.get("hearings", [])
+                    + cal.get("transitions", [])):
+            _raw = _ev.get("date") or _ev.get("start") or _ev.get("decision_date")
+            if _raw:
+                try:
+                    _d = pd.Timestamp(_raw).date()
+                    _days = (_d - _today).days
+                    if 0 <= _days <= 14:
+                        _fed_events_14d.append(
+                            f"{_d} ({_days}d): {_ev.get('description') or _ev.get('type','?')}"
+                        )
+                except Exception:
+                    pass
+
+        # Fed Observatory (fast — reads parquets, no API)
+        _fed_obs = {}
+        if _FED_OBS_AVAILABLE:
+            try:
+                _fed_obs = estimate_rate_probability(load_fed_data())
+            except Exception:
+                pass
+
+        _news_det = cdet.get("news", {})
         context = {
+            # Preço e regime
+            "ts": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M UTC"),
             "price": price, "pct_24h": pct_24h, "regime": regime,
-            "signal": signal, "score": total_score, "threshold": threshold,
-            "capital": capital, "has_position": portfolio.get("has_position", False),
+            "rsi": rsi_14 or 50.0, "bb_pct": bb_pct or 0.5,
+            "bb_upper": _bb_upper, "bb_middle": _bb_middle, "bb_lower": _bb_lower,
+            "ma50": _ma50, "ma100": _ma99,
+            "ma200_val": ma200_val or _ma200_sp,
+            "ma200_pct": ma200_pct, "ma200_slope": ma200_slope,
+            "atr_14": _atr_14,
+            "high_7d": _high_7d, "low_7d": _low_7d,
+            "high_30d": _high_30d, "low_30d": _low_30d,
+            # Sinal e score
+            "signal": signal, "score": total_score,
+            "score_raw": total_score_raw, "regime_multiplier": regime_multiplier,
+            "threshold": threshold, "block_reason": block_reason_computed,
+            # Clusters
             "c_technical": clusters["technical"], "c_positioning": clusters["positioning"],
             "c_macro": clusters["macro"], "c_liquidity": clusters["liquidity"],
             "c_sentiment": clusters["sentiment"], "c_news": clusters["news"],
-            "oi_z": zs.get("oi_z",0), "taker_z": zs.get("taker_z",0),
-            "funding_z": zs.get("funding_z",0), "dgs10_z": zs.get("dgs10_z",0),
-            "curve_z": zs.get("curve_z",0), "stablecoin_z": zs.get("stablecoin_z",0),
-            "etf_z": zs.get("etf_z",0), "fg_z": zs.get("fg_z",0),
-            "bubble_z": zs.get("bubble_z",0), "ls_account": ls_account_val,
-            "whale_signal": ws_label, "fed_event": fomc.get("next_event","N/A"),
-            "fed_days": fomc.get("days_away","—"), "fed_adj": fomc.get("proximity_adj",0),
+            # Derivativos
+            "oi_z": zs.get("oi_z", 0), "funding_z": zs.get("funding_z", 0),
+            "taker_z": zs.get("taker_z", 0),
+            "ls_account": ls_account_val, "ls_position": ls_position_val,
+            "whale_signal": ws_label,
+            # Liquidez
+            "stablecoin_z": zs.get("stablecoin_z", 0), "etf_z": zs.get("etf_z", 0),
+            # Macro z-scores
+            "dgs10_z": zs.get("dgs10_z", 0), "dgs2_z": zs.get("dgs2_z", 0),
+            "curve_z": zs.get("curve_z", 0), "rrp_z": zs.get("rrp_z", 0),
+            # Fed
+            "fed_event": fomc.get("next_event", "N/A"),
+            "fed_days": fomc.get("days_away", "—"),
+            "fed_adj": fomc.get("proximity_adj", 0),
+            "fed_events_14d": _fed_events_14d,
+            "fed_obs": _fed_obs,
+            # Sentimento
+            "fg_z": zs.get("fg_z", 0), "bubble_z": zs.get("bubble_z", 0),
+            "crypto_news_score": _news_det.get("crypto_score", 0),
+            "fed_news_score": _news_det.get("fed_score", 0),
+            # Capital
+            "capital": capital, "has_position": portfolio.get("has_position", False),
         }
         with st.spinner("Consultando DeepSeek..."):
             analysis = call_deepseek_analyst(context)
-        st.markdown(f"""
-<div class="cg-card" style="font-size:14px; line-height:1.7;">
-{analysis.replace(chr(10), '<br>')}
-</div>""", unsafe_allow_html=True)
+        st.markdown('<div class="cg-card" style="font-size:14px; line-height:1.7;">',
+                    unsafe_allow_html=True)
+        st.markdown(analysis)
+        st.markdown('</div>', unsafe_allow_html=True)
 
     # =========================================================================
     # SECTION 4: WHALE TRACKING
