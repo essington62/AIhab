@@ -112,10 +112,26 @@ stale_tolerance_days:
 # ---------------------------------------------------------------------------
 execution:
   position_size_pct: 1.0     # 100% of paper capital per trade
-  stop_loss_pct: 0.03        # 3% (paper trading: wider stop for short-shot trades)
-  take_profit_pct: 0.02      # 2%
-  trailing_stop_pct: 0.015   # 1.5% trailing
   paper_capital_usd: 10000.0
+
+  # Dynamic stops (ATR-based) — ATR% calculated once at entry, fixed for trade duration
+  use_dynamic_stops: true
+  atr_multiplier_sl: 2.0       # K_sl:    Stop Loss   = K × ATR%
+  atr_multiplier_tp: 1.5       # K_tp:    Take Profit = K × ATR%
+  atr_multiplier_trail: 1.0    # K_trail: Trailing    = K × ATR%
+
+  # Safety clamps for dynamic stops
+  min_stop_loss_pct: 0.01      # SL never < 1%
+  max_stop_loss_pct: 0.06      # SL never > 6%
+  min_take_profit_pct: 0.01    # TP never < 1%
+  max_take_profit_pct: 0.06    # TP never > 6%
+  min_trailing_pct: 0.008      # trailing never < 0.8%
+  max_trailing_pct: 0.04       # trailing never > 4%
+
+  # Fixed stops — fallback when ATR unavailable or use_dynamic_stops=false
+  stop_loss_pct: 0.03          # 3%
+  take_profit_pct: 0.02        # 2%
+  trailing_stop_pct: 0.015     # 1.5%
 
 # ---------------------------------------------------------------------------
 # News classification (DeepSeek)

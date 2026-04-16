@@ -12,6 +12,7 @@ import pytest
 from src.trading.execution import (
     atomic_write_json,
     check_stops,
+    compute_dynamic_stops,
     execute_entry,
     execute_exit,
 )
@@ -534,3 +535,199 @@ class TestLockMechanism:
             assert lock2 is None  # second acquire must fail (lock busy)
         finally:
             release_lock(lock1)
+
+
+# ---------------------------------------------------------------------------
+# Dynamic stops — compute_dynamic_stops
+# ---------------------------------------------------------------------------
+
+def _base_exec_params():
+    return {
+        "use_dynamic_stops": True,
+        "atr_multiplier_sl": 2.0,
+        "atr_multiplier_tp": 1.5,
+        "atr_multiplier_trail": 1.0,
+        "min_stop_loss_pct":   0.01,
+        "max_stop_loss_pct":   0.06,
+        "min_take_profit_pct": 0.01,
+        "max_take_profit_pct": 0.06,
+        "min_trailing_pct":    0.008,
+        "max_trailing_pct":    0.04,
+        "stop_loss_pct":    0.03,
+        "take_profit_pct":  0.02,
+        "trailing_stop_pct": 0.015,
+        "position_size_pct": 1.0,
+        "paper_capital_usd": 10000.0,
+    }
+
+
+class TestComputeDynamicStops:
+    def test_dynamic_stops_normal(self):
+        # BTC $75,000, ATR $900 → ATR% = 1.2%
+        r = compute_dynamic_stops(75000.0, 900.0, _base_exec_params())
+        assert r["stops_mode"] == "dynamic"
+        assert r["atr_pct"] == pytest.approx(0.012, abs=1e-6)
+        assert r["stop_loss_pct"] == pytest.approx(2.0 * 0.012, abs=1e-6)
+        assert r["take_profit_pct"] == pytest.approx(1.5 * 0.012, abs=1e-6)
+        assert r["trailing_stop_pct"] == pytest.approx(1.0 * 0.012, abs=1e-6)
+        assert r["stop_loss_price"] == pytest.approx(75000.0 * (1 - 0.024), abs=1.0)
+        assert r["take_profit_price"] == pytest.approx(75000.0 * (1 + 0.018), abs=1.0)
+
+    def test_dynamic_stops_high_volatility(self):
+        # ATR doubles → stops wider but clamped at max 6%
+        r = compute_dynamic_stops(75000.0, 1800.0, _base_exec_params())
+        assert r["stop_loss_pct"] == pytest.approx(2.0 * 0.024, abs=1e-5)  # 4.8%, within max
+        assert r["stop_loss_pct"] <= 0.06
+
+    def test_dynamic_stops_low_volatility(self):
+        # Tiny ATR → stops clamped at min
+        r = compute_dynamic_stops(75000.0, 50.0, _base_exec_params())  # 0.067% ATR
+        assert r["stop_loss_pct"] == pytest.approx(0.01, abs=1e-6)   # clamped at min 1%
+        assert r["take_profit_pct"] == pytest.approx(0.01, abs=1e-6)
+        assert r["trailing_stop_pct"] == pytest.approx(0.008, abs=1e-6)
+
+    def test_dynamic_stops_clamp_max(self):
+        # ATR $4,500 → raw SL = 2.0 × 6% = 12% → clamped to 6%
+        r = compute_dynamic_stops(75000.0, 4500.0, _base_exec_params())
+        assert r["stop_loss_pct"] == pytest.approx(0.06, abs=1e-6)
+        assert r["take_profit_pct"] == pytest.approx(0.06, abs=1e-6)
+        assert r["trailing_stop_pct"] == pytest.approx(0.04, abs=1e-6)
+
+    def test_dynamic_stops_clamp_min(self):
+        # ATR $1 → all clamped to mins
+        r = compute_dynamic_stops(75000.0, 1.0, _base_exec_params())
+        assert r["stop_loss_pct"] == pytest.approx(0.01, abs=1e-6)
+        assert r["trailing_stop_pct"] == pytest.approx(0.008, abs=1e-6)
+
+
+class TestExecuteEntryDynamic:
+    def _portfolio(self):
+        return {
+            "has_position": False,
+            "entry_price": None,
+            "entry_time": None,
+            "quantity": 0.0,
+            "capital_usd": 10000.0,
+            "trailing_high": None,
+            "stop_loss_price": None,
+            "take_profit_price": None,
+            "last_updated": None,
+        }
+
+    def test_entry_with_atr_dynamic(self, tmp_path):
+        with (
+            patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_params", return_value={"execution": _base_exec_params()}),
+        ):
+            p = execute_entry(75000.0, self._portfolio(), atr_14=900.0)
+        assert p["stops_mode"] == "dynamic"
+        assert p["entry_atr_pct"] == pytest.approx(0.012, abs=1e-6)
+        # TP = entry * (1 + 1.5 × 1.2%) = 75000 * 1.018 = 76350
+        assert p["take_profit_price"] == pytest.approx(76350.0, abs=1.0)
+        # SL = entry * (1 - 2.0 × 1.2%) = 75000 * 0.976 = 73200
+        assert p["stop_loss_price"] == pytest.approx(73200.0, abs=1.0)
+
+    def test_entry_without_atr_fallback(self, tmp_path):
+        with (
+            patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_params", return_value={"execution": _base_exec_params()}),
+        ):
+            p = execute_entry(75000.0, self._portfolio(), atr_14=None)
+        assert p["stops_mode"] == "fixed"
+        assert p["entry_atr_pct"] is None
+        assert p["stop_loss_price"] == pytest.approx(75000.0 * 0.97, abs=1.0)
+
+    def test_entry_dynamic_disabled(self, tmp_path):
+        params = {**_base_exec_params(), "use_dynamic_stops": False}
+        with (
+            patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_params", return_value={"execution": params}),
+        ):
+            p = execute_entry(75000.0, self._portfolio(), atr_14=900.0)
+        assert p["stops_mode"] == "fixed"
+        assert p["stop_loss_price"] == pytest.approx(75000.0 * 0.97, abs=1.0)
+
+
+class TestCheckStopsDynamic:
+    def _portfolio(self, entry=70000.0, trailing_pct_actual=None):
+        p = {
+            "has_position": True,
+            "entry_price": entry,
+            "quantity": 0.142857,
+            "capital_usd": 10000.0,
+            "trailing_high": entry,
+            "stop_loss_price": round(entry * 0.97, 2),
+            "take_profit_price": round(entry * 1.02, 2),
+            "entry_time": "2026-04-16T10:00:00+00:00",
+            "last_updated": None,
+        }
+        if trailing_pct_actual is not None:
+            p["trailing_stop_pct_actual"] = trailing_pct_actual
+        return p
+
+    def test_check_stops_uses_portfolio_trailing(self, tmp_path):
+        # trailing_stop_pct_actual = 0.024 (ATR dynamic, wider than default 0.015)
+        p = self._portfolio(70000.0, trailing_pct_actual=0.024)
+        # Price = 71000 (just above entry, below TP 71400) → trailing_high moves to 71000
+        # Trailing stop = 71000 * (1 - 0.024) = 69296 > original SL 67900 → moves up
+        with patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"):
+            triggered, reason = check_stops(71000.0, p)
+        assert triggered is False
+        assert p["stop_loss_price"] == pytest.approx(71000.0 * (1 - 0.024), abs=1.0)
+
+    def test_check_stops_trailing_fallback(self, tmp_path):
+        # No trailing_stop_pct_actual in portfolio → falls back to global param (0.015)
+        p = self._portfolio(70000.0)  # no trailing_pct_actual
+        with (
+            patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_params", return_value={
+                "execution": _base_exec_params()
+            }),
+        ):
+            triggered, _ = check_stops(71000.0, p)
+        assert triggered is False
+        # Trailing high moved to 71000; new SL = 71000 * (1 - 0.015) = 69935
+        assert p["stop_loss_price"] == pytest.approx(71000.0 * (1 - 0.015), abs=1.0)
+
+
+class TestIntegrationDynamicStops:
+    def test_full_cycle_dynamic_stops(self, tmp_path):
+        """Entry with ATR → dynamic stops set → check_stops uses portfolio trailing → exit records mode."""
+        portfolio = {
+            "has_position": False,
+            "entry_price": None,
+            "entry_time": None,
+            "quantity": 0.0,
+            "capital_usd": 10000.0,
+            "trailing_high": None,
+            "stop_loss_price": None,
+            "take_profit_price": None,
+            "last_updated": None,
+        }
+        params = _base_exec_params()
+
+        # 1. Entry with ATR
+        with (
+            patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_params", return_value={"execution": params}),
+        ):
+            portfolio = execute_entry(75000.0, portfolio, atr_14=900.0)
+
+        assert portfolio["stops_mode"] == "dynamic"
+        assert portfolio["trailing_stop_pct_actual"] == pytest.approx(0.012, abs=1e-6)
+
+        # 2. check_stops uses portfolio trailing (0.012), not global (0.015)
+        portfolio["entry_time"] = "2026-04-16T10:00:00+00:00"
+        with patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"):
+            triggered, reason = check_stops(75800.0, portfolio)  # price up, trailing moves
+        assert triggered is False
+        # Trailing stop = 75800 * (1 - 0.012) = 74891.6
+        assert portfolio["stop_loss_price"] == pytest.approx(75800.0 * (1 - 0.012), abs=1.0)
+
+        # 3. TP hit → exit
+        with (
+            patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"),
+        ):
+            triggered, reason = check_stops(portfolio["take_profit_price"] + 1, portfolio)
+        assert triggered is True
+        assert reason == "TAKE_PROFIT"

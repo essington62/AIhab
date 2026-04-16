@@ -305,10 +305,16 @@ def _init_trade_tracking(
     for name in ["technical", "positioning", "macro", "liquidity", "sentiment", "news"]:
         portfolio[f"entry_cluster_{name}"] = clusters.get(name)
 
-    # Stops configuration at entry (for record keeping)
-    portfolio["entry_stop_gain_pct"] = params["take_profit_pct"]
-    portfolio["entry_stop_loss_pct"] = params["stop_loss_pct"]
-    portfolio["entry_trailing_stop_pct"] = params["trailing_stop_pct"]
+    # Stops configuration at entry (actual values used, dynamic or fixed)
+    portfolio["entry_stop_gain_pct"] = portfolio.get("take_profit_price") and round(
+        portfolio["take_profit_price"] / portfolio["entry_price"] - 1, 6
+    ) or params["take_profit_pct"]
+    portfolio["entry_stop_loss_pct"] = portfolio.get("stop_loss_price") and round(
+        1 - portfolio["stop_loss_price"] / portfolio["entry_price"], 6
+    ) or params["stop_loss_pct"]
+    portfolio["entry_trailing_stop_pct"] = portfolio.get("trailing_stop_pct_actual") or params["trailing_stop_pct"]
+    portfolio["entry_stops_mode"] = portfolio.get("stops_mode", "fixed")
+    portfolio["entry_atr_pct"] = portfolio.get("entry_atr_pct")
 
 
 def _hours_since_entry(entry_time: pd.Timestamp, ts_str: Optional[str]) -> Optional[float]:
@@ -365,6 +371,12 @@ def _build_trade_record(portfolio: dict, exit_price: float, exit_reason: str) ->
         "entry_cluster_liquidity": portfolio.get("entry_cluster_liquidity"),
         "entry_cluster_sentiment": portfolio.get("entry_cluster_sentiment"),
         "entry_cluster_news": portfolio.get("entry_cluster_news"),
+        # Dynamic stops info
+        "stops_mode": portfolio.get("stops_mode", "fixed"),
+        "entry_atr_pct": portfolio.get("entry_atr_pct"),
+        "actual_stop_loss_pct": portfolio.get("entry_stop_loss_pct"),
+        "actual_take_profit_pct": portfolio.get("entry_stop_gain_pct"),
+        "actual_trailing_pct": portfolio.get("trailing_stop_pct_actual"),
         # Price path — extracted by _save_completed_trade
         "_price_path": portfolio.get("price_path", []),
     }
@@ -572,7 +584,8 @@ def run_cycle() -> dict:
 
         # Entry decision
         if result["signal"] == "ENTER" and not portfolio["has_position"]:
-            portfolio = execute_entry(current_price, portfolio)
+            atr_14 = technical.get("atr_14")
+            portfolio = execute_entry(current_price, portfolio, atr_14=atr_14)
             # Stamp scoring context + init MAE/MFE tracking fields
             _init_trade_tracking(portfolio, result, regime, technical, zscores)
             atomic_write_json(portfolio, get_path("portfolio_state"))

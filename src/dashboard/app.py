@@ -1716,10 +1716,31 @@ def main():
 </div>""", unsafe_allow_html=True)
 
     if has_pos and entry_px:
+        _stops_mode  = portfolio.get("stops_mode", "fixed")
+        _atr_pct     = portfolio.get("entry_atr_pct")
+        _trail_pct   = portfolio.get("trailing_stop_pct_actual")
+        _sl_pct_act  = (1 - sl_px / entry_px) * 100 if sl_px and entry_px else None
+        _tp_pct_act  = (tp_px / entry_px - 1) * 100 if tp_px and entry_px else None
+        _trail_label = (
+            f"{_trail_pct*100:.2f}% ATR" if _stops_mode == "dynamic" and _trail_pct
+            else (f"{_trail_pct*100:.2f}% fixed" if _trail_pct else "—")
+        )
+        _sl_label = (
+            f"${sl_px:,.0f} ({_sl_pct_act:.2f}% ATR)" if _stops_mode == "dynamic" and _sl_pct_act
+            else f"${sl_px:,.0f} ({_sl_pct_act:.2f}% fixed)" if _sl_pct_act
+            else f"${sl_px:,.0f}"
+        )
+        _tp_label = (
+            f"${tp_px:,.0f} ({_tp_pct_act:.2f}% ATR)" if _stops_mode == "dynamic" and _tp_pct_act
+            else f"${tp_px:,.0f} ({_tp_pct_act:.2f}% fixed)" if _tp_pct_act
+            else f"${tp_px:,.0f}"
+        )
+        _atr_label = f" &nbsp;|&nbsp; <span style='color:#8b949e;'>ATR: </span>{_atr_pct*100:.2f}%" if _atr_pct else ""
         st.markdown(f"""
 <div class="cg-card" style="padding:8px 16px; margin-bottom:8px; font-size:12px;">
-  <span style="color:#8b949e;">Stop Loss: </span><span class="neg">${sl_px:,.0f}</span> &nbsp;|&nbsp;
-  <span style="color:#8b949e;">Take Profit: </span><span class="pos">${tp_px:,.0f}</span> &nbsp;|&nbsp;
+  <span style="color:#8b949e;">Stop Loss: </span><span class="neg">{_sl_label}</span> &nbsp;|&nbsp;
+  <span style="color:#8b949e;">Take Profit: </span><span class="pos">{_tp_label}</span> &nbsp;|&nbsp;
+  <span style="color:#8b949e;">Trailing: </span>{_trail_label}{_atr_label} &nbsp;|&nbsp;
   <span style="color:#8b949e;">Quantidade: </span>{qty:.6f} BTC &nbsp;|&nbsp;
   <span style="color:#8b949e;">Desde: </span>{entry_time}
 </div>""", unsafe_allow_html=True)
