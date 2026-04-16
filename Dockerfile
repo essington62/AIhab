@@ -18,6 +18,7 @@ RUN pip install --no-cache-dir -r environment_docker.txt
 COPY src/ src/
 COPY conf/ conf/
 COPY scripts/ scripts/
+COPY .streamlit/ .streamlit/
 COPY CLAUDE.md .
 
 # Create data directories

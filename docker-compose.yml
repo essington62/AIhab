@@ -14,7 +14,15 @@ services:
   dashboard:
     build: .
     container_name: aihab-dashboard
-    command: ["python", "-m", "streamlit", "run", "src/dashboard/app.py", "--server.port=8501", "--server.address=0.0.0.0", "--server.headless=true"]
+    command: [
+      "python", "-m", "streamlit", "run", "src/dashboard/app.py",
+      "--server.port=8501",
+      "--server.address=0.0.0.0",
+      "--server.headless=true",
+      "--server.enableCORS=false",
+      "--server.enableXsrfProtection=false",
+      "--browser.gatherUsageStats=false"
+    ]
     ports:
       - "8501:8501"
     volumes:
@@ -27,6 +35,12 @@ services:
     depends_on:
       - app
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
 volumes:
   aihab-data:

@@ -36,6 +36,7 @@ st.set_page_config(
     page_icon="₿",
     layout="wide",
     initial_sidebar_state="collapsed",
+    menu_items={},
 )
 
 # ---------------------------------------------------------------------------
@@ -719,30 +720,31 @@ Gere a análise estruturada em 6 seções conforme instruído no system prompt."
 # ===========================================================================
 
 def main():
-    # ── Load all data ─────────────────────────────────────────────────────
-    portfolio  = load_portfolio()
-    zs_df      = load_gate_zscores()
-    spot_df    = load_spot()
-    regime_df  = load_regime_history()
-    score_hist = load_score_history()
-    macro_df   = load_parquet("data/02_intermediate/macro/fred_daily_clean.parquet")
-    vix_df     = load_parquet("data/01_raw/market/vix_daily.parquet")
-    dxy_df     = load_parquet("data/01_raw/market/dxy_daily.parquet")
-    oil_df     = load_parquet("data/01_raw/market/oil_daily.parquet")
-    sp500_df   = load_parquet("data/01_raw/market/sp500_daily.parquet")
-    oi_df      = load_parquet("data/02_intermediate/futures/oi_1h_clean.parquet")
-    taker_df   = load_parquet("data/02_intermediate/futures/taker_1h_clean.parquet")
-    funding_df = load_parquet("data/02_intermediate/futures/funding_1h_clean.parquet")
-    lsa_df     = load_parquet("data/01_raw/futures/ls_account_1h.parquet")
-    lsp_df     = load_parquet("data/01_raw/futures/ls_position_1h.parquet")
-    liq_df     = load_parquet("data/01_raw/coinglass/liquidations_4h.parquet")
-    ob_df      = load_parquet("data/01_raw/coinglass/orderbook_4h.parquet")
-    ob_agg_df  = load_parquet("data/01_raw/coinglass/orderbook_agg_4h.parquet")
-    fg_df      = load_parquet("data/01_raw/sentiment/fear_greed_daily.parquet")
-    etf_df     = load_parquet("data/01_raw/coinglass/etf_flows_daily.parquet")
-    bubble_df  = load_parquet("data/01_raw/coinglass/bubble_index_daily.parquet")
-    ns_df      = load_parquet("data/02_features/news_scores.parquet")
-    cal        = load_fed_calendar()
+    # ── Load all data (cached 60s — spinner visible on first cold start) ──
+    with st.spinner("Carregando dados..."):
+        portfolio  = load_portfolio()
+        zs_df      = load_gate_zscores()
+        spot_df    = load_spot()
+        regime_df  = load_regime_history()
+        score_hist = load_score_history()
+        macro_df   = load_parquet("data/02_intermediate/macro/fred_daily_clean.parquet")
+        vix_df     = load_parquet("data/01_raw/market/vix_daily.parquet")
+        dxy_df     = load_parquet("data/01_raw/market/dxy_daily.parquet")
+        oil_df     = load_parquet("data/01_raw/market/oil_daily.parquet")
+        sp500_df   = load_parquet("data/01_raw/market/sp500_daily.parquet")
+        oi_df      = load_parquet("data/02_intermediate/futures/oi_1h_clean.parquet")
+        taker_df   = load_parquet("data/02_intermediate/futures/taker_1h_clean.parquet")
+        funding_df = load_parquet("data/02_intermediate/futures/funding_1h_clean.parquet")
+        lsa_df     = load_parquet("data/01_raw/futures/ls_account_1h.parquet")
+        lsp_df     = load_parquet("data/01_raw/futures/ls_position_1h.parquet")
+        liq_df     = load_parquet("data/01_raw/coinglass/liquidations_4h.parquet")
+        ob_df      = load_parquet("data/01_raw/coinglass/orderbook_4h.parquet")
+        ob_agg_df  = load_parquet("data/01_raw/coinglass/orderbook_agg_4h.parquet")
+        fg_df      = load_parquet("data/01_raw/sentiment/fear_greed_daily.parquet")
+        etf_df     = load_parquet("data/01_raw/coinglass/etf_flows_daily.parquet")
+        bubble_df  = load_parquet("data/01_raw/coinglass/bubble_index_daily.parquet")
+        ns_df      = load_parquet("data/02_features/news_scores.parquet")
+        cal        = load_fed_calendar()
 
     # ── Current values ─────────────────────────────────────────────────────
     price      = _latest(spot_df, "close", 0.0)
@@ -848,7 +850,7 @@ def main():
         st.markdown("### ⚙️ Settings")
         auto_refresh = st.checkbox("Auto refresh (60s)", value=False)
         if auto_refresh:
-            time.sleep(1)
+            time.sleep(60)
             st.rerun()
         st.markdown("---")
         st.markdown(f"**Last load:** {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}")
