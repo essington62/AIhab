@@ -83,6 +83,8 @@ score_history: "data/04_scoring/score_history.parquet"
 portfolio_state: "data/05_output/portfolio_state.json"
 trade_log: "data/05_output/trade_log.parquet"
 cycle_log: "data/05_output/cycle_log.parquet"
+trades: "data/05_output/trades.parquet"
+trade_paths: "data/05_output/trade_paths.parquet"
 
 # ---------------------------------------------------------------------------
 # conf

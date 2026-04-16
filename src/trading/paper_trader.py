@@ -7,11 +7,17 @@ Pipeline:
 
 Hardened: gate scoring wrapped in try/except — cycle never breaks the loop.
 Each step is independently logged.
+
+MAE/MFE: while a position is open, each cycle records the price path and
+tracks max_favorable (MFE) and max_adverse (MAE). On exit, the completed
+trade is persisted to data/05_output/trades.parquet and
+data/05_output/trade_paths.parquet.
 """
 
 import json
 import logging
-from datetime import date, datetime, timezone
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +36,7 @@ from src.trading.execution import (
     execute_entry,
     execute_exit,
     load_portfolio,
+    parse_utc,
 )
 
 logger = logging.getLogger("trading.paper_trader")
@@ -104,7 +111,6 @@ def load_news_crypto_score(lookback_hours: int = 4) -> float:
     recent = df[df["timestamp"] >= cutoff]
     if recent.empty:
         return 0.0
-    # Take mean of crypto scores in window
     if "crypto_score" in recent.columns:
         return float(recent["crypto_score"].mean())
     return 0.0
@@ -120,7 +126,6 @@ def load_score_history() -> list[float]:
         return []
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.sort_values("timestamp")
-    # Last 90 days
     cutoff = pd.Timestamp.utcnow() - pd.Timedelta(days=90)
     return df[df["timestamp"] >= cutoff]["total_score"].dropna().tolist()
 
@@ -135,8 +140,8 @@ def append_score_history(result: dict) -> None:
 
     row = pd.DataFrame([{
         "timestamp": pd.Timestamp.utcnow(),
-        "total_score": result["score"],           # post-G0-multiplier (decision score)
-        "score_raw": result.get("score_raw"),     # pre-multiplier cluster sum
+        "total_score": result["score"],
+        "score_raw": result.get("score_raw"),
         "regime_multiplier": result.get("regime_multiplier"),
         "threshold": result.get("threshold"),
         "signal": result.get("signal"),
@@ -200,6 +205,184 @@ def log_cycle(
         f"rsi={technical.get('rsi_14')} | "
         f"capital=${portfolio.get('capital_usd'):.2f} pos={portfolio.get('has_position')}"
     )
+
+
+# ---------------------------------------------------------------------------
+# MAE/MFE — trade tracking helpers
+# ---------------------------------------------------------------------------
+
+def _update_excursions(portfolio: dict, current_price: float, cycle_ts: pd.Timestamp) -> None:
+    """
+    Update price_path, max_favorable (MFE), max_adverse (MAE) in-place.
+    Persists portfolio to disk after update.
+    """
+    entry_price = portfolio.get("entry_price")
+    if not entry_price:
+        return
+
+    current_return = (current_price - entry_price) / entry_price
+    entry_time = parse_utc(portfolio.get("entry_time", str(cycle_ts)))
+    hours_elapsed = (cycle_ts - entry_time).total_seconds() / 3600
+
+    # MFE — maximum favorable excursion
+    if current_return > portfolio.get("max_favorable", 0.0):
+        portfolio["max_favorable"] = current_return
+        portfolio["mfe_time"] = str(cycle_ts)
+
+    # MAE — maximum adverse excursion
+    if current_return < portfolio.get("max_adverse", 0.0):
+        portfolio["max_adverse"] = current_return
+        portfolio["mae_time"] = str(cycle_ts)
+
+    portfolio.setdefault("price_path", []).append({
+        "timestamp": str(cycle_ts),
+        "price": current_price,
+        "return_pct": round(current_return * 100, 4),
+        "hours_since_entry": round(hours_elapsed, 2),
+    })
+
+    atomic_write_json(portfolio, get_path("portfolio_state"))
+
+
+def _init_trade_tracking(
+    portfolio: dict,
+    result: dict,
+    regime: str,
+    technical: dict,
+    zscores: dict,
+) -> None:
+    """
+    Stamp scoring context + init MAE/MFE fields onto portfolio (in-place).
+    Call immediately after execute_entry, before saving portfolio.
+    """
+    params = get_params()["execution"]
+    clusters = result.get("clusters", {})
+
+    portfolio["trade_id"] = str(uuid.uuid4())
+    portfolio["max_favorable"] = 0.0
+    portfolio["max_adverse"] = 0.0
+    portfolio["mfe_time"] = None
+    portfolio["mae_time"] = None
+    portfolio["price_path"] = []
+
+    # Scoring context at entry
+    portfolio["entry_score_raw"] = result.get("score_raw")
+    portfolio["entry_score_adjusted"] = result.get("score")
+    portfolio["entry_regime"] = regime
+    portfolio["entry_bb_pct"] = technical.get("bb_pct")
+    portfolio["entry_rsi"] = technical.get("rsi_14")
+    portfolio["entry_atr"] = technical.get("atr_14")
+
+    # Z-score snapshot at entry
+    portfolio["entry_oi_z"] = zscores.get("oi_z")
+    portfolio["entry_fg_raw"] = zscores.get("fg_z")
+
+    # Cluster scores at entry
+    for name in ["technical", "positioning", "macro", "liquidity", "sentiment", "news"]:
+        portfolio[f"entry_cluster_{name}"] = clusters.get(name)
+
+    # Stops configuration at entry (for record keeping)
+    portfolio["entry_stop_gain_pct"] = params["take_profit_pct"]
+    portfolio["entry_stop_loss_pct"] = params["stop_loss_pct"]
+    portfolio["entry_trailing_stop_pct"] = params["trailing_stop_pct"]
+
+
+def _hours_since_entry(entry_time: pd.Timestamp, ts_str: Optional[str]) -> Optional[float]:
+    if not ts_str:
+        return None
+    try:
+        t = parse_utc(ts_str)
+        return round((t - entry_time).total_seconds() / 3600, 2)
+    except Exception:
+        return None
+
+
+def _build_trade_record(portfolio: dict, exit_price: float, exit_reason: str) -> dict:
+    """
+    Assemble completed trade record from portfolio state.
+    Includes price_path (to be split out by _save_completed_trade).
+    """
+    entry_price = portfolio["entry_price"]
+    entry_time = parse_utc(portfolio.get("entry_time", ""))
+    exit_time = pd.Timestamp.utcnow()
+    duration_h = (exit_time - entry_time).total_seconds() / 3600
+    return_pct = (exit_price - entry_price) / entry_price
+
+    return {
+        "trade_id": portfolio.get("trade_id", str(uuid.uuid4())),
+        "entry_time": str(entry_time),
+        "exit_time": str(exit_time),
+        "duration_hours": round(duration_h, 2),
+        "entry_price": entry_price,
+        "exit_price": exit_price,
+        "return_pct": round(return_pct * 100, 4),
+        "stop_gain_pct": portfolio.get("entry_stop_gain_pct"),
+        "stop_loss_pct": portfolio.get("entry_stop_loss_pct"),
+        "trailing_stop_pct": portfolio.get("entry_trailing_stop_pct"),
+        "exit_reason": exit_reason,
+        # MAE/MFE
+        "mae_pct": round(portfolio.get("max_adverse", 0.0) * 100, 4),
+        "mfe_pct": round(portfolio.get("max_favorable", 0.0) * 100, 4),
+        "mae_time": portfolio.get("mae_time"),
+        "mfe_time": portfolio.get("mfe_time"),
+        "hours_to_mfe": _hours_since_entry(entry_time, portfolio.get("mfe_time")),
+        # Entry context
+        "entry_score_raw": portfolio.get("entry_score_raw"),
+        "entry_score_adjusted": portfolio.get("entry_score_adjusted"),
+        "entry_regime": portfolio.get("entry_regime"),
+        "entry_bb_pct": portfolio.get("entry_bb_pct"),
+        "entry_rsi": portfolio.get("entry_rsi"),
+        "entry_atr": portfolio.get("entry_atr"),
+        "entry_oi_z": portfolio.get("entry_oi_z"),
+        "entry_fg_raw": portfolio.get("entry_fg_raw"),
+        "entry_cluster_technical": portfolio.get("entry_cluster_technical"),
+        "entry_cluster_positioning": portfolio.get("entry_cluster_positioning"),
+        "entry_cluster_macro": portfolio.get("entry_cluster_macro"),
+        "entry_cluster_liquidity": portfolio.get("entry_cluster_liquidity"),
+        "entry_cluster_sentiment": portfolio.get("entry_cluster_sentiment"),
+        "entry_cluster_news": portfolio.get("entry_cluster_news"),
+        # Price path — extracted by _save_completed_trade
+        "_price_path": portfolio.get("price_path", []),
+    }
+
+
+def _save_completed_trade(record: dict) -> None:
+    """
+    Persist completed trade to trades.parquet.
+    Splits price_path into trade_paths.parquet.
+    """
+    price_path_data = record.pop("_price_path", [])
+
+    # trades.parquet — one scalar row per trade
+    trades_path = get_path("trades")
+    trades_path.parent.mkdir(parents=True, exist_ok=True)
+    trade_row = pd.DataFrame([record])
+
+    if trades_path.exists():
+        existing = pd.read_parquet(trades_path)
+        combined = pd.concat([existing, trade_row], ignore_index=True)
+    else:
+        combined = trade_row
+
+    combined.to_parquet(trades_path, index=False)
+    logger.info(
+        f"Trade saved: id={record.get('trade_id')} "
+        f"return={record.get('return_pct'):+.3f}% "
+        f"mae={record.get('mae_pct'):.3f}% mfe={record.get('mfe_pct'):.3f}% "
+        f"reason={record.get('exit_reason')}"
+    )
+
+    # trade_paths.parquet — one row per price observation
+    if price_path_data:
+        paths_path = get_path("trade_paths")
+        paths_path.parent.mkdir(parents=True, exist_ok=True)
+        for obs in price_path_data:
+            obs["trade_id"] = record.get("trade_id")
+        paths_df = pd.DataFrame(price_path_data)
+        if paths_path.exists():
+            existing_paths = pd.read_parquet(paths_path)
+            paths_df = pd.concat([existing_paths, paths_df], ignore_index=True)
+        paths_df.to_parquet(paths_path, index=False)
 
 
 # ---------------------------------------------------------------------------
@@ -282,23 +465,33 @@ def run_cycle() -> dict:
     if current_price is not None:
         # Check stops first (position management takes priority)
         if portfolio["has_position"]:
+            # Update MAE/MFE and price path before stop evaluation
+            _update_excursions(portfolio, current_price, cycle_ts)
+
             exit_triggered, exit_reason = check_stops(current_price, portfolio)
             if exit_triggered:
+                # Build completed trade record BEFORE execute_exit clears portfolio state
+                completed_trade = _build_trade_record(portfolio, current_price, exit_reason)
                 portfolio = execute_exit(current_price, portfolio, exit_reason)
+                _save_completed_trade(completed_trade)
+
             # Reload after potential state change
             portfolio = load_portfolio()
 
         # Entry decision
         if result["signal"] == "ENTER" and not portfolio["has_position"]:
             portfolio = execute_entry(current_price, portfolio)
+            # Stamp scoring context + init MAE/MFE tracking fields
+            _init_trade_tracking(portfolio, result, regime, technical, zscores)
+            atomic_write_json(portfolio, get_path("portfolio_state"))
 
     # 11. Append score history
     append_score_history(result)
 
     # 11b. Stamp last_signal/score/threshold/regime onto portfolio state
     portfolio["last_signal"] = result.get("signal")
-    portfolio["last_score"] = result.get("score")          # post-G0-multiplier
-    portfolio["last_score_raw"] = result.get("score_raw")  # pre-multiplier cluster sum
+    portfolio["last_score"] = result.get("score")
+    portfolio["last_score_raw"] = result.get("score_raw")
     portfolio["last_regime_multiplier"] = result.get("regime_multiplier")
     portfolio["last_threshold"] = result.get("threshold")
     portfolio["last_regime"] = regime

@@ -52,7 +52,7 @@ gate_params:
   g3_dgs2:     [-0.154, 0.7, 0.5]
   g4_oi:       [-0.472, 0.8, 2.0]
   g5_stable:   [0.326,  0.6, 1.5]   # raised 1.0→1.5 (corr 7d=+0.50, best predictor)
-  g6_bubble:   [-0.345, 0.7, 1.0]
+  g6_bubble:   [-0.345, 0.7, 0.0]   # paper trading: zero contribution (monitoring only)
   g7_etf:      [0.263,  0.6, 1.5]   # raised 1.0→1.5 (corr 7d=+0.48, 2nd best)
   g8_fg:       [-0.211, 0.7, 0.8]
   g9_taker:    [0.143,  0.5, 0.3]   # lowered 0.5→0.3 (corr 7d=+0.06, noise)
@@ -90,6 +90,11 @@ kill_switches:
   g2_fed_fomc_threshold: -1.0
 
 # ---------------------------------------------------------------------------
+# Regime multiplier (G0) — Sideways only; Bear=0.0 (block), Bull=1.0 (fixed)
+# ---------------------------------------------------------------------------
+sideways_multiplier: 1.0   # paper trading: pass raw score through; production default: 0.5
+
+# ---------------------------------------------------------------------------
 # Stale data tolerance (days)
 # ---------------------------------------------------------------------------
 stale_tolerance_days:
@@ -107,9 +112,9 @@ stale_tolerance_days:
 # ---------------------------------------------------------------------------
 execution:
   position_size_pct: 1.0     # 100% of paper capital per trade
-  stop_loss_pct: 0.02        # 2%
-  take_profit_pct: 0.015     # 1.5%
-  trailing_stop_pct: 0.01    # 1%
+  stop_loss_pct: 0.03        # 3% (paper trading: wider stop for short-shot trades)
+  take_profit_pct: 0.02      # 2%
+  trailing_stop_pct: 0.015   # 1.5% trailing
   paper_capital_usd: 10000.0
 
 # ---------------------------------------------------------------------------

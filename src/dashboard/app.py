@@ -540,7 +540,7 @@ Para HOLD → BLOCK: duas condições que ativariam kill switch ou ruptura de su
 Cada condição em uma linha, com threshold numérico explícito.
 
 CONTEXTO
-Gate scoring v2: 11 gates, 6 clusters. Score = Σ clusters × G0 (Bear=0, Sideways=0.5, Bull=1.0). ENTER se score ≥ threshold. Kill switches forçam BLOCK: BB_TOP≥0.80, OI z>2.5, NEWS_BEAR<-3, FED_HAWKISH (fed_score<-1 + FOMC≤T-2), BEAR_REGIME."""
+Gate scoring v2: 11 gates, 6 clusters. Score = Σ clusters × G0 (Bear=0, Sideways={sw_mult}×, Bull=1.0). ENTER se score ≥ threshold. Kill switches forçam BLOCK: BB_TOP≥0.80, OI z>2.5, NEWS_BEAR<-3, FED_HAWKISH (fed_score<-1 + FOMC≤T-2), BEAR_REGIME."""
 
 
 def call_deepseek_analyst(context: dict) -> str:
@@ -679,7 +679,8 @@ Gere a análise estruturada em 6 seções conforme instruído no system prompt."
                 "temperature": 0.3,
                 "top_p": 0.9,
                 "messages": [
-                    {"role": "system", "content": _DEEPSEEK_SYSTEM_PROMPT},
+                    {"role": "system", "content": _DEEPSEEK_SYSTEM_PROMPT.format(
+                        sw_mult=float(load_params().get("sideways_multiplier", 0.5)))},
                     {"role": "user",   "content": user_prompt},
                 ],
             },
@@ -778,8 +779,9 @@ def main():
     clusters, cdet = compute_clusters(zs, bb_pct or 0.5, rsi_14 or 50.0, portfolio)
     total_score_raw = round(sum(clusters.values()), 4)
 
-    # Apply G0 regime multiplier (mirrors gate_scoring.py: Bear=0, Sideways=0.5, Bull=1.0)
-    regime_multiplier = {"Sideways": 0.5, "Bear": 0.0, "Bull": 1.0}.get(regime, 1.0)
+    # Apply G0 regime multiplier (mirrors gate_scoring.py; Sideways reads from params)
+    _sw_mult = float(load_params().get("sideways_multiplier", 0.5))
+    regime_multiplier = {"Sideways": _sw_mult, "Bear": 0.0, "Bull": 1.0}.get(regime, 1.0)
     total_score = round(total_score_raw * regime_multiplier, 4)
 
     # Re-evaluate kill switches on fresh data (mirrors gate_scoring.check_kill_switches)

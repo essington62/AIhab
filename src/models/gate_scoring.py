@@ -84,12 +84,13 @@ def check_ma200_override(spot_df: pd.DataFrame) -> dict:
 # ---------------------------------------------------------------------------
 
 def evaluate_g0(regime: str) -> dict:
-    """Bear → BLOCK. Sideways → multiplier 0.5. Bull → 1.0."""
+    """Bear → BLOCK. Sideways → multiplier from params. Bull → 1.0."""
     regime = (regime or "Sideways").strip()
     if regime == "Bear":
         return {"block": True, "block_reason": "BLOCK_BEAR_REGIME", "multiplier": 0.0}
     elif regime == "Sideways":
-        return {"block": False, "multiplier": 0.5}
+        mult = float(get_params().get("sideways_multiplier", 0.5))
+        return {"block": False, "multiplier": mult}
     else:  # Bull
         return {"block": False, "multiplier": 1.0}
 

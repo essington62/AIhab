@@ -61,7 +61,10 @@ class TestG0Regime:
     def test_sideways_multiplier(self):
         result = evaluate_g0("Sideways")
         assert result["block"] is False
-        assert result["multiplier"] == pytest.approx(0.5)
+        # multiplier is read from parameters.yml; paper trading sets 1.0, production default 0.5
+        from src.config import get_params
+        expected = float(get_params().get("sideways_multiplier", 0.5))
+        assert result["multiplier"] == pytest.approx(expected)
 
     def test_bull_multiplier(self):
         result = evaluate_g0("Bull")
