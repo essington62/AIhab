@@ -14,6 +14,7 @@ trade is persisted to data/05_output/trades.parquet and
 data/05_output/trade_paths.parquet.
 """
 
+import fcntl
 import json
 import logging
 import uuid
@@ -40,6 +41,29 @@ from src.trading.execution import (
 )
 
 logger = logging.getLogger("trading.paper_trader")
+
+_LOCK_FILE = "/tmp/aihab_trading.lock"
+
+
+# ---------------------------------------------------------------------------
+# Lock helpers — prevent concurrent access to portfolio_state.json
+# ---------------------------------------------------------------------------
+
+def acquire_lock():
+    """Try to acquire exclusive lock. Returns file handle or None if busy."""
+    try:
+        lock_fd = open(_LOCK_FILE, "w")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_fd
+    except (IOError, OSError):
+        return None
+
+
+def release_lock(lock_fd) -> None:
+    """Release lock and close file handle."""
+    if lock_fd:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
 
 
 # ---------------------------------------------------------------------------
@@ -383,6 +407,74 @@ def _save_completed_trade(record: dict) -> None:
             existing_paths = pd.read_parquet(paths_path)
             paths_df = pd.concat([existing_paths, paths_df], ignore_index=True)
         paths_df.to_parquet(paths_path, index=False)
+
+
+# ---------------------------------------------------------------------------
+# Lightweight stop check (15-min cycle)
+# ---------------------------------------------------------------------------
+
+def check_stops_only() -> dict:
+    """
+    Lightweight stop check — runs every 15min.
+    No gate/regime recalculation. Only reads current price vs stops.
+    Updates trailing_high and MAE/MFE if no stop triggered.
+    Exits the position if any stop is reached.
+
+    Returns:
+        dict with {action: 'no_position'|'hold'|'exit'|'error', ...}
+    """
+    cycle_ts = pd.Timestamp.utcnow()
+
+    portfolio = load_portfolio()
+    if not portfolio.get("has_position"):
+        logger.info("[STOPS-15m] No open position — skipping")
+        return {"action": "no_position"}
+
+    try:
+        technical = get_latest_technical()
+        current_price = technical.get("close")
+        if current_price is None:
+            raise ValueError("close price is None")
+    except Exception as e:
+        logger.warning(f"[STOPS-15m] WARN: could not fetch price, skipping cycle: {e}")
+        return {"action": "error", "error": str(e)}
+
+    # Update MAE/MFE and price path (saves portfolio)
+    _update_excursions(portfolio, current_price, cycle_ts)
+
+    # Check stops (also updates trailing_high in portfolio dict + saves if moved)
+    exit_triggered, exit_reason = check_stops(current_price, portfolio)
+
+    if exit_triggered:
+        completed_trade = _build_trade_record(portfolio, current_price, exit_reason)
+        portfolio = execute_exit(current_price, portfolio, exit_reason)
+        _save_completed_trade(completed_trade)
+        return_pct = (current_price - completed_trade["entry_price"]) / completed_trade["entry_price"]
+        logger.info(
+            f"[STOPS-15m] EXIT by {exit_reason} | price=${current_price:,.0f} | "
+            f"return={return_pct:+.2%}"
+        )
+        return {
+            "action": "exit",
+            "reason": exit_reason,
+            "price": current_price,
+            "return_pct": return_pct,
+        }
+
+    trailing_high = portfolio.get("trailing_high") or 0.0
+    sg = portfolio.get("take_profit_price") or 0.0
+    sl = portfolio.get("stop_loss_price") or 0.0
+    logger.info(
+        f"[STOPS-15m] HOLD | price=${current_price:,.0f} | "
+        f"SG=${sg:,.0f} | SL=${sl:,.0f} | trailing_high=${trailing_high:,.0f}"
+    )
+    return {
+        "action": "hold",
+        "price": current_price,
+        "trailing_high": trailing_high,
+        "stop_gain": sg,
+        "stop_loss": sl,
+    }
 
 
 # ---------------------------------------------------------------------------

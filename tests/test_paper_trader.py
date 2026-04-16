@@ -19,6 +19,9 @@ from src.trading.paper_trader import (
     _build_trade_record,
     _init_trade_tracking,
     _update_excursions,
+    acquire_lock,
+    check_stops_only,
+    release_lock,
 )
 
 
@@ -343,3 +346,191 @@ class TestBuildTradeRecord:
         rec = _build_trade_record(p, 71400.0, "TAKE_PROFIT")
         assert "_price_path" in rec
         assert len(rec["_price_path"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# check_stops_only
+# ---------------------------------------------------------------------------
+
+class TestCheckStopsOnly:
+    def _open_portfolio(self, entry=70000.0):
+        return {
+            "has_position": True,
+            "entry_price": entry,
+            "entry_time": "2026-04-16T10:00:00+00:00",
+            "quantity": 0.142857,
+            "capital_usd": 10000.0,
+            "trailing_high": entry,
+            "stop_loss_price": round(entry * 0.97, 2),
+            "take_profit_price": round(entry * 1.02, 2),
+            "last_updated": None,
+            "trade_id": "test-uuid-stops",
+            "max_favorable": 0.0,
+            "max_adverse": 0.0,
+            "mfe_time": None,
+            "mae_time": None,
+            "price_path": [],
+            "entry_score_raw": 3.5,
+            "entry_score_adjusted": 3.5,
+            "entry_regime": "Sideways",
+            "entry_bb_pct": 0.25,
+            "entry_rsi": 38.0,
+            "entry_atr": None,
+            "entry_oi_z": -0.5,
+            "entry_fg_raw": -0.3,
+            "entry_cluster_technical": 3.0,
+            "entry_cluster_positioning": 0.8,
+            "entry_cluster_macro": 0.5,
+            "entry_cluster_liquidity": 1.2,
+            "entry_cluster_sentiment": 0.3,
+            "entry_cluster_news": 0.2,
+            "entry_stop_gain_pct": 0.02,
+            "entry_stop_loss_pct": 0.03,
+            "entry_trailing_stop_pct": 0.015,
+        }
+
+    def _no_position_portfolio(self):
+        return {
+            "has_position": False,
+            "entry_price": None,
+            "capital_usd": 10000.0,
+        }
+
+    def test_check_stops_no_position(self):
+        with patch("src.trading.paper_trader.load_portfolio", return_value=self._no_position_portfolio()):
+            result = check_stops_only()
+        assert result["action"] == "no_position"
+
+    def test_check_stops_hold(self, tmp_path):
+        portfolio = self._open_portfolio(70000.0)
+        with (
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_latest_technical", return_value={"close": 70500.0}),
+            patch("src.trading.paper_trader._update_excursions"),
+            patch("src.trading.paper_trader.check_stops", return_value=(False, "")),
+            patch("src.trading.execution.get_path", return_value=tmp_path / "portfolio_state.json"),
+        ):
+            result = check_stops_only()
+        assert result["action"] == "hold"
+        assert result["price"] == 70500.0
+
+    def test_check_stops_stop_gain(self, tmp_path):
+        portfolio = self._open_portfolio(70000.0)
+        completed = {**portfolio, "_price_path": []}
+        completed["entry_price"] = 70000.0
+        with (
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_latest_technical", return_value={"close": 71500.0}),
+            patch("src.trading.paper_trader._update_excursions"),
+            patch("src.trading.paper_trader.check_stops", return_value=(True, "TAKE_PROFIT")),
+            patch("src.trading.paper_trader._build_trade_record", return_value={**completed}),
+            patch("src.trading.paper_trader.execute_exit", return_value={**portfolio, "has_position": False}),
+            patch("src.trading.paper_trader._save_completed_trade"),
+        ):
+            result = check_stops_only()
+        assert result["action"] == "exit"
+        assert result["reason"] == "TAKE_PROFIT"
+
+    def test_check_stops_stop_loss(self, tmp_path):
+        portfolio = self._open_portfolio(70000.0)
+        completed = {**portfolio, "_price_path": [], "entry_price": 70000.0}
+        with (
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_latest_technical", return_value={"close": 67900.0}),
+            patch("src.trading.paper_trader._update_excursions"),
+            patch("src.trading.paper_trader.check_stops", return_value=(True, "STOP_LOSS")),
+            patch("src.trading.paper_trader._build_trade_record", return_value={**completed}),
+            patch("src.trading.paper_trader.execute_exit", return_value={**portfolio, "has_position": False}),
+            patch("src.trading.paper_trader._save_completed_trade"),
+        ):
+            result = check_stops_only()
+        assert result["action"] == "exit"
+        assert result["reason"] == "STOP_LOSS"
+
+    def test_check_stops_trailing(self, tmp_path):
+        portfolio = self._open_portfolio(70000.0)
+        portfolio["trailing_high"] = 72000.0
+        completed = {**portfolio, "_price_path": [], "entry_price": 70000.0}
+        with (
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_latest_technical", return_value={"close": 70900.0}),
+            patch("src.trading.paper_trader._update_excursions"),
+            patch("src.trading.paper_trader.check_stops", return_value=(True, "STOP_LOSS")),
+            patch("src.trading.paper_trader._build_trade_record", return_value={**completed}),
+            patch("src.trading.paper_trader.execute_exit", return_value={**portfolio, "has_position": False}),
+            patch("src.trading.paper_trader._save_completed_trade"),
+        ):
+            result = check_stops_only()
+        assert result["action"] == "exit"
+        assert result["reason"] == "STOP_LOSS"
+
+    def test_check_stops_updates_trailing_high(self, tmp_path):
+        portfolio = self._open_portfolio(70000.0)
+        updated_portfolio = {**portfolio, "trailing_high": 71000.0}
+        with (
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_latest_technical", return_value={"close": 71000.0}),
+            patch("src.trading.paper_trader._update_excursions"),
+            patch("src.trading.paper_trader.check_stops", return_value=(False, "")) as mock_cs,
+        ):
+            mock_cs.side_effect = lambda price, p: (
+                p.update({"trailing_high": 71000.0}) or (False, "")
+            )
+            result = check_stops_only()
+        assert result["action"] == "hold"
+        assert result["trailing_high"] == 71000.0
+
+    def test_check_stops_updates_excursions(self, tmp_path):
+        portfolio = self._open_portfolio(70000.0)
+        mock_update = MagicMock()
+        with (
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_latest_technical", return_value={"close": 70500.0}),
+            patch("src.trading.paper_trader._update_excursions", mock_update),
+            patch("src.trading.paper_trader.check_stops", return_value=(False, "")),
+        ):
+            check_stops_only()
+        mock_update.assert_called_once()
+        _, args, _ = mock_update.mock_calls[0]
+        assert args[1] == 70500.0  # current_price passed correctly
+
+    def test_check_stops_api_error(self):
+        portfolio = self._open_portfolio(70000.0)
+        with (
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_latest_technical", side_effect=Exception("timeout")),
+        ):
+            result = check_stops_only()
+        assert result["action"] == "error"
+        assert "timeout" in result["error"]
+
+    def test_check_stops_close_none_is_error(self):
+        portfolio = self._open_portfolio(70000.0)
+        with (
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_latest_technical", return_value={"close": None}),
+        ):
+            result = check_stops_only()
+        assert result["action"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# Lock mechanism
+# ---------------------------------------------------------------------------
+
+class TestLockMechanism:
+    def test_acquire_release_lock(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("src.trading.paper_trader._LOCK_FILE", str(tmp_path / "test.lock"))
+        lock = acquire_lock()
+        assert lock is not None
+        release_lock(lock)
+
+    def test_lock_conflict(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("src.trading.paper_trader._LOCK_FILE", str(tmp_path / "test.lock"))
+        lock1 = acquire_lock()
+        assert lock1 is not None
+        try:
+            lock2 = acquire_lock()
+            assert lock2 is None  # second acquire must fail (lock busy)
+        finally:
+            release_lock(lock1)

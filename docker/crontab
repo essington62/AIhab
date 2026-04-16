@@ -3,8 +3,11 @@ SHELL=/bin/bash
 # AI.hab Production Crontab — supercronic format (standard cron syntax)
 # All times UTC. PYTHONPATH e TZ herdados do container via supercronic.
 
-# Hourly cycle (minuto 5 de cada hora)
-5 * * * * /app/scripts/hourly_cycle.sh
+# Hourly cycle — scoring completo (gates + regime + stops) — minuto 5 de cada hora
+5 * * * * /app/scripts/hourly_cycle.sh >> /app/logs/hourly.log 2>&1
+
+# Checagem rápida de stops — a cada 15min (minutos 20, 35, 50; não coincide com minuto 5)
+20,35,50 * * * * cd /app && python3 scripts/check_stops.py >> /app/logs/stops.log 2>&1
 
 # Daily update (07:00 UTC)
 0 7 * * * /app/scripts/daily_update.sh
