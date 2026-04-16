@@ -21,7 +21,7 @@ COPY scripts/ scripts/
 COPY CLAUDE.md .
 
 # Create data directories
-RUN mkdir -p data/{01_raw/{spot,futures,macro,coinglass,sentiment,news,market},02_intermediate/{spot,futures,macro},02_features,03_models,04_scoring,05_output} \
+RUN mkdir -p data/{01_raw/{spot,futures,macro,coinglass,sentiment,news,market},02_intermediate/{spot,futures,macro},02_features,03_models,04_scoring,05_output,06_observation} \
     && mkdir -p logs
 
 # Make scripts executable

@@ -8,3 +8,6 @@ SHELL=/bin/bash
 
 # Daily update (07:00 UTC)
 0 7 * * * /app/scripts/daily_update.sh
+
+# Daily observation log (01:00 UTC — paper-trading observation period)
+0 1 * * * cd /app && python scripts/daily_observation.py >> /app/logs/daily_observation.log 2>&1
