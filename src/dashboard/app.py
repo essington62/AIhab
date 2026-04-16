@@ -394,16 +394,28 @@ def interpret_cluster(name: str, score: float, det: dict, zs: dict) -> str:
     if name == "sentiment":
         taker_z  = z("taker_z")
         bubble_z = z("bubble_z")
-        fg_z     = z("fg_z")
+        fg_raw   = det.get("fg_raw")  # raw 0-100 value from sentiment parquet
         if taker_z < -2.0:
             return "⚠️ Pressão vendedora extrema nos futuros — retail vendendo agressivamente"
         if taker_z > 2.0:
             return "Compra agressiva nos futuros — momentum comprador forte"
         if bubble_z > 1.5:
             return "Bubble index overextended — mercado sobreaquecido, risco de correção"
-        if fg_z < -1.0:
-            return "Fear & Greed em medo — contrarian bullish, historicamente bom pra comprar"
-        if fg_z > 1.5:
+        # F&G text driven by raw value (0-100 fixed scale, not z-score)
+        if fg_raw is not None:
+            if fg_raw < 25:
+                return "😱 Extreme Fear — contrarian bullish (retail aterrorizado)"
+            if fg_raw < 45:
+                return "😰 Fear — cautela acumulando, potencial oportunidade contrarian"
+            if fg_raw < 55:
+                return "😐 Neutro"
+            if fg_raw < 75:
+                return "😏 Greed — otimismo moderado, monitorar"
+            return "🤑 Extreme Greed — contrarian bearish, risco de correção"
+        # Fallback to z-score if raw not available
+        if z("fg_z") < -1.0:
+            return "Fear & Greed em medo — contrarian bullish"
+        if z("fg_z") > 1.5:
             return "Greed elevado — mercado complacente, cautela"
         return "Sentimento neutro"
 
@@ -498,38 +510,37 @@ def get_last_cycle_info() -> dict:
 # DeepSeek AI Analyst
 # ---------------------------------------------------------------------------
 
-_DEEPSEEK_SYSTEM_PROMPT = """Você é um analista quantitativo sênior do sistema AI.hab, especializado em trading sistemático de BTC. Sua função é interpretar snapshots do gate scoring v2 e traduzir sinais estatísticos em leitura operacional clara, com foco em Fed, posicionamento institucional (baleias), estrutura de preço e liquidez.
+_DEEPSEEK_SYSTEM_PROMPT = """Você é o analista quantitativo do sistema AI.hab. Recebe um snapshot do gate scoring v2 e produz leitura operacional em 3 seções, em texto plano.
 
-REGRAS ESTRITAS
-- Use APENAS os dados fornecidos no prompt do usuário. Nunca invoque preços históricos específicos, notícias pontuais, ou eventos fora do payload.
-- Nunca dê conselho financeiro direto. Sugestões de ação são sempre sobre o que mudaria o sinal do sistema (ENTER / HOLD / BLOCK), nunca sobre o que o usuário deve fazer com capital próprio.
-- Linguagem probabilística: "sugere", "indica", "é consistente com", "aumenta a probabilidade de". Evite determinismos.
-- Sem emojis exceto os que vêm no payload. Sem hype, sem exclamações.
-- Português do Brasil, técnico mas legível. Markdown nativo (negrito, listas, headers). Sem HTML.
-- Resposta entre 400 e 700 palavras. Se payload for pobre (warmup, dados incompletos), seja mais curto e sinalize.
+REGRAS
+- Proibido recapitular o que já está nos cards do dashboard (regime, cluster scores, macro z-scores, sentiment, news scores). O usuário já vê tudo isso. Foque APENAS no que os dados combinados implicam para estrutura de preço e gatilhos de sinal.
+- Sem markdown. Sem asteriscos, hashtags, bullets com asterisco. Use apenas quebras de linha e numeração simples (1., 2., 3.) para subitens.
+- Exija números concretos. Nunca escreva "perto da resistência" sem mencionar o valor em dólares. Nunca "melhora do momentum" sem threshold específico.
+- Linguagem probabilística. Evite determinismos. Use "sugere", "indica", "é consistente com".
+- Resposta entre 300 e 500 palavras total. Se dados incompletos, seja mais curto e sinalize.
+- Português do Brasil. Sem emojis. Sem hype.
 
-ESTRUTURA OBRIGATÓRIA (sempre nessa ordem, com headers markdown)
+ESTRUTURA OBRIGATÓRIA
 
-## 1. Regime e Macro
-Leitura do R5C, MA200 (distância e slope), curva de juros (DGS10, DGS2, 2y10y, RRP) e Fed (proximity, posicionamento hawkish/dovish, próximos eventos do payload). Destaque se alguma reunião ou evento do Fed está no horizonte curto (≤7 dias) e como isso ajusta o risco.
+SEÇÃO 1 — LEITURA DO SINAL ATUAL (2-4 linhas)
+Sintetize a decisão do sistema: sinal, score ajustado vs threshold, e a tensão narrativa central (por que o score está onde está — qual cluster domina, o que está travando ou liberando o sinal). Se kill switch ativo, por que domina. Se HOLD, qual cluster ou regime impede ENTER.
 
-## 2. Estrutura de Preço — Suportes e Resistências
-A partir do preço atual, Bollinger Bands (posição dentro da banda), MA200 e níveis derivados do payload, identifique suporte imediato, suporte estrutural, resistência imediata, resistência estrutural e zona de invalidação. Use números concretos. Se um nível não for inferível do payload, diga explicitamente.
+SEÇÃO 2 — SUPORTES E RESISTÊNCIAS
+Seis linhas, uma por nível. Use exatamente este formato:
+Resistência imediata: $XX,XXX — [origem: BB upper / high 7d / etc]
+Resistência estrutural: $XX,XXX — [origem]
+Suporte imediato: $XX,XXX — [origem: MA50 / BB middle / etc]
+Suporte estrutural: $XX,XXX — [origem: MA200 / low 7d / etc]
+Zona de invalidação (bearish): $XX,XXX — [condição: fechamento 1h abaixo de X invalida estrutura]
+ATR(14): $XXX — amplitude média dos movimentos horários
 
-## 3. Posicionamento Institucional (Baleias e Derivativos)
-Interprete L/S ratio (accounts e positions), OI z-score, funding rate, taker ratio, ETF flows e stablecoin mcap. Conecte num parágrafo de conclusão sobre quem controla o mercado.
+SEÇÃO 3 — GATILHOS PARA MUDAR O SINAL
+Para HOLD → ENTER: duas condições simultâneas mensuráveis (preço, RSI, z-score, regime).
+Para HOLD → BLOCK: duas condições que ativariam kill switch ou ruptura de suporte.
+Cada condição em uma linha, com threshold numérico explícito.
 
-## 4. Sentimento e Notícias
-Fear & Greed (z-score), bubble index, news cluster. Se houver kill switch de notícias ativo, mencionar.
-
-## 5. Leitura do Sinal Atual
-Sinal ENTER/HOLD/BLOCK do payload. Citar: score bruto × multiplicador = score ajustado, comparação com threshold, kill switches ativos (dominam a decisão).
-
-## 6. Gatilhos Específicos para Mudar o Sinal
-Duas condições concretas e mensuráveis que mudariam o sinal para o oposto (preço exato, z-score, nível de RSI, etc.).
-
-CONTEXTO DO SISTEMA
-Gate scoring v2: 11 gates em 6 clusters. Score = Σ clusters × G0 (Bear=0, Sideways=0.5, Bull=1.0). ENTER se score ≥ threshold. Kill switches (BB_TOP ≥0.80, OI_EXTREME z>2.5, NEWS_BEAR <-3, FED_HAWKISH, BEAR_REGIME, MA200 override) forçam BLOCK. Ciclo horário: Binance + CoinGlass + FRED + Alt.me."""
+CONTEXTO
+Gate scoring v2: 11 gates, 6 clusters. Score = Σ clusters × G0 (Bear=0, Sideways=0.5, Bull=1.0). ENTER se score ≥ threshold. Kill switches forçam BLOCK: BB_TOP≥0.80, OI z>2.5, NEWS_BEAR<-3, FED_HAWKISH (fed_score<-1 + FOMC≤T-2), BEAR_REGIME."""
 
 
 def call_deepseek_analyst(context: dict) -> str:
@@ -650,7 +661,7 @@ Eventos Fed ≤14 dias:
   {fed_events_str}
 
 ## SENTIMENTO
-Fear & Greed z-score: {context.get('fg_z', 0):.2f}
+Fear & Greed: {context.get('fg_val', 0):.0f}/100 ({context.get('fg_cls', 'N/A')}) | z-score: {context.get('fg_z', 0):.2f}
 Bubble index z-score: {context.get('bubble_z', 0):.2f}
 News crypto score:    {context.get('crypto_news_score', 0):+.2f}
 News fed score:       {context.get('fed_news_score', 0):+.2f}
@@ -819,6 +830,7 @@ def main():
     rrp   = _latest(macro_df, "rrp", 0)
     fg_val = _latest(fg_df, "fg_value", 0)
     fg_cls = _latest(fg_df, "fg_classification", "")
+    cdet["sentiment"]["fg_raw"] = fg_val  # raw 0-100 value for interpret_cluster
     vix_val   = _latest(vix_df, "close", 0)
     dxy_val   = _latest(dxy_df, "close", 0)
     oil_val   = _latest(oil_df, "close", 0)
@@ -1072,6 +1084,7 @@ def main():
             "fed_events_14d": _fed_events_14d,
             "fed_obs": _fed_obs,
             # Sentimento
+            "fg_val": fg_val, "fg_cls": fg_cls,
             "fg_z": zs.get("fg_z", 0), "bubble_z": zs.get("bubble_z", 0),
             "crypto_news_score": _news_det.get("crypto_score", 0),
             "fed_news_score": _news_det.get("fed_score", 0),

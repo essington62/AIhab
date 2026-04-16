@@ -15,7 +15,7 @@ zscore_windows:
   stablecoin_mcap: 30
   bubble_index: 30
   etf_flows: 30
-  fear_greed: 30
+  fear_greed: 252        # 1y window: 30d captured only Extreme Fear period → z inverted
 
 etf_flow_rolling: 7          # days for ETF cumulative flow pre-z-score
 
