@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arquitetura — BTC Funding Rate Arbitrage</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace; background: #0a0e17; color: #c9d1d9; padding: 32px; min-height: 100vh; }
+
+  h1 { color: #58a6ff; font-size: 22px; margin-bottom: 4px; }
+  .subtitle { color: #8b949e; font-size: 13px; margin-bottom: 32px; }
+
+  .architecture { display: flex; flex-direction: column; gap: 24px; max-width: 1100px; margin: 0 auto; }
+
+  /* Layer */
+  .layer { border: 1px solid #30363d; border-radius: 12px; padding: 20px; position: relative; background: #0d1117; }
+  .layer-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .layer-num { background: #1f6feb; color: #fff; font-size: 11px; font-weight: 700; width: 24px; height: 24px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+  .layer-title { font-size: 16px; font-weight: 700; color: #f0f6fc; }
+  .layer-tag { font-size: 11px; color: #8b949e; background: #161b22; border: 1px solid #30363d; padding: 2px 8px; border-radius: 10px; margin-left: auto; }
+
+  /* Cards inside layers */
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .card { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 14px; }
+  .card-icon { font-size: 18px; margin-bottom: 6px; }
+  .card-name { font-size: 13px; font-weight: 600; color: #e6edf3; margin-bottom: 4px; }
+  .card-detail { font-size: 11px; color: #8b949e; line-height: 1.5; }
+  .card-detail .hl { color: #7ee787; font-weight: 600; }
+  .card-detail .warn { color: #d29922; font-weight: 600; }
+  .card-detail .info { color: #58a6ff; }
+
+  /* Exchange row */
+  .exchanges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .exc { background: #1c2333; border: 1px solid #30363d; border-radius: 6px; padding: 6px 10px; font-size: 11px; color: #c9d1d9; text-align: center; min-width: 80px; }
+  .exc .name { font-weight: 600; color: #e6edf3; }
+  .exc .ep { color: #8b949e; font-size: 10px; }
+
+  /* Arrow between layers */
+  .arrow { text-align: center; color: #30363d; font-size: 20px; line-height: 1; padding: 0; margin: -8px 0; }
+  .arrow span { color: #484f58; font-size: 11px; display: block; margin-top: 2px; }
+
+  /* Timeline */
+  .timeline { margin-top: 32px; border: 1px solid #30363d; border-radius: 12px; padding: 20px; background: #0d1117; }
+  .timeline h2 { font-size: 15px; color: #f0f6fc; margin-bottom: 16px; }
+  .tl-row { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid #161b22; }
+  .tl-row:last-child { border-bottom: none; }
+  .tl-freq { min-width: 70px; font-size: 12px; font-weight: 700; color: #7ee787; text-align: right; }
+  .tl-bar { height: 6px; border-radius: 3px; }
+  .tl-label { font-size: 12px; color: #c9d1d9; flex: 1; }
+  .tl-cron { font-size: 10px; color: #484f58; font-family: monospace; min-width: 140px; text-align: right; }
+
+  /* Strategy box */
+  .strategy { margin-top: 32px; border: 1px solid #1f6feb; border-radius: 12px; padding: 20px; background: linear-gradient(135deg, #0d1117 0%, #0d1927 100%); }
+  .strategy h2 { font-size: 15px; color: #58a6ff; margin-bottom: 12px; }
+  .strat-flow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .strat-step { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 10px 14px; text-align: center; }
+  .strat-step .num { font-size: 10px; color: #484f58; }
+  .strat-step .act { font-size: 12px; color: #e6edf3; font-weight: 600; }
+  .strat-step .det { font-size: 10px; color: #8b949e; margin-top: 2px; }
+  .strat-arrow { color: #30363d; font-size: 18px; }
+  .strat-math { background: #161b22; border: 1px solid #21262d; border-radius: 8px; padding: 14px; font-size: 12px; line-height: 1.8; }
+  .strat-math .formula { color: #7ee787; }
+  .strat-math .neg { color: #f85149; }
+  .strat-math .result { color: #d29922; font-weight: 700; }
+
+  /* Status badges */
+  .status { display: inline-block; font-size: 10px; font-weight: 600; padding: 2px 6px; border-radius: 4px; margin-left: 6px; }
+  .status.done { background: #1a3a2a; color: #7ee787; border: 1px solid #2a5a3a; }
+  .status.next { background: #3a2a1a; color: #d29922; border: 1px solid #5a4a2a; }
+  .status.future { background: #1a1a2a; color: #8b949e; border: 1px solid #30363d; }
+
+  /* Data flow section */
+  .dataflow { margin-top: 24px; }
+  .dataflow h3 { font-size: 13px; color: #8b949e; margin-bottom: 10px; }
+  .df-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .df-table th { text-align: left; color: #8b949e; font-weight: 600; padding: 6px 8px; border-bottom: 1px solid #30363d; font-size: 11px; }
+  .df-table td { padding: 6px 8px; border-bottom: 1px solid #161b22; }
+  .df-table .mono { font-family: monospace; color: #58a6ff; font-size: 11px; }
+</style>
+</head>
+<body>
+
+<h1>BTC Funding Rate Arbitrage — Arquitetura</h1>
+<p class="subtitle">Delta-neutral cross-exchange strategy &nbsp;|&nbsp; 6 exchanges &nbsp;|&nbsp; EC2 sa-east-1</p>
+
+<div class="architecture">
+
+  <!-- LAYER 1: DATA COLLECTION -->
+  <div class="layer">
+    <div class="layer-header">
+      <div class="layer-num">1</div>
+      <div class="layer-title">Data Collection (Data Lake)</div>
+      <div class="layer-tag">btc-data-lake repo</div>
+    </div>
+
+    <div class="exchanges">
+      <div class="exc"><div class="name">Binance</div><div class="ep">fapi/v1</div></div>
+      <div class="exc"><div class="name">OKX</div><div class="ep">api/v5</div></div>
+      <div class="exc"><div class="name">Bybit</div><div class="ep">v5/market</div></div>
+      <div class="exc"><div class="name">Gate.io</div><div class="ep">api/v4</div></div>
+      <div class="exc"><div class="name">Bitget</div><div class="ep">api/v2</div></div>
+      <div class="exc"><div class="name">KuCoin</div><div class="ep">api/v1</div></div>
+    </div>
+
+    <div class="cards" style="margin-top: 14px;">
+      <div class="card">
+        <div class="card-icon">📊</div>
+        <div class="card-name">Funding Rates <span class="status done">LIVE</span></div>
+        <div class="card-detail">
+          <span class="hl">8h</span> cycle (00, 08, 16 UTC)<br>
+          Coleta: <span class="info">10min</span> após settlement<br>
+          680+ records backfilled<br>
+          <span class="mono">data/normalized/funding_rate/</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-icon">📖</div>
+        <div class="card-name">Order Book <span class="status next">DEPLOY</span></div>
+        <div class="card-detail">
+          <span class="hl">1h</span> snapshots (minuto 2)<br>
+          Top 10 níveis bid + ask<br>
+          Spread, depth, mid_price<br>
+          <span class="mono">data/normalized/order_book/</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-icon">📈</div>
+        <div class="card-name">Klines (OHLCV) <span class="status future">FASE 3</span></div>
+        <div class="card-detail">
+          <span class="warn">5min</span> candles<br>
+          Preço, volume, VWAP<br>
+          Correlação cross-exchange<br>
+          <span class="mono">data/normalized/klines/</span>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🔓</div>
+        <div class="card-name">Open Interest <span class="status future">FASE 4</span></div>
+        <div class="card-detail">
+          <span class="warn">1h</span> snapshots<br>
+          OI absoluto + variação<br>
+          Long/Short ratio<br>
+          <span class="mono">data/normalized/oi/</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">▼ ▼ ▼<span>parquet particionado por exchange/date</span></div>
+
+  <!-- LAYER 2: SIGNALS -->
+  <div class="layer">
+    <div class="layer-header">
+      <div class="layer-num">2</div>
+      <div class="layer-title">Signal Engine</div>
+      <div class="layer-tag">a implementar</div>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="card-icon">⚡</div>
+        <div class="card-name">Spread Monitor</div>
+        <div class="card-detail">
+          Funding spread cross-exchange<br>
+          <span class="hl">Threshold:</span> spread &gt; 2× fees<br>
+          Ranking: melhor par para arb<br>
+          Alert quando oportunidade
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-icon">💧</div>
+        <div class="card-name">Slippage Estimator</div>
+        <div class="card-detail">
+          Simula execução no book<br>
+          Tamanhos: $500, $1k, $5k<br>
+          <span class="warn">Custo real</span> = fees + slippage<br>
+          Viabilidade por exchange
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🎯</div>
+        <div class="card-name">Opportunity Score</div>
+        <div class="card-detail">
+          Score = spread - fees - slippage<br>
+          Persistência do spread (N ciclos)<br>
+          Confiança: <span class="info">low / med / high</span><br>
+          Min hold: 3 ciclos (24h)
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-icon">⏱️</div>
+        <div class="card-name">Regime Detector</div>
+        <div class="card-detail">
+          Funding trending vs mean-reverting<br>
+          Volatilidade do spread<br>
+          Sazonalidade (funding resets)<br>
+          Correlação com preço spot
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">▼ ▼ ▼<span>oportunidade detectada → execução</span></div>
+
+  <!-- LAYER 3: EXECUTION -->
+  <div class="layer">
+    <div class="layer-header">
+      <div class="layer-num">3</div>
+      <div class="layer-title">Execution (Paper → Live)</div>
+      <div class="layer-tag">futuro</div>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="card-icon">🔄</div>
+        <div class="card-name">Position Manager</div>
+        <div class="card-detail">
+          Leg 1: <span class="hl">Long Spot</span> (exchange baixo funding)<br>
+          Leg 2: <span class="hl">Short Perp</span> (exchange alto funding)<br>
+          Delta-neutral: exposição = 0<br>
+          Rebalance quando drift &gt; 0.5%
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🚦</div>
+        <div class="card-name">Risk Manager</div>
+        <div class="card-detail">
+          Max position per exchange<br>
+          Max total exposure<br>
+          <span class="neg">Kill switch:</span> funding flip<br>
+          Margin monitoring
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-icon">📡</div>
+        <div class="card-name">Order Router</div>
+        <div class="card-detail">
+          API keys (read-only primeiro)<br>
+          Limit orders no book<br>
+          Retry + timeout handling<br>
+          Execution report logging
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="arrow">▼ ▼ ▼<span>logs + métricas → monitoramento</span></div>
+
+  <!-- LAYER 4: MONITORING -->
+  <div class="layer">
+    <div class="layer-header">
+      <div class="layer-num">4</div>
+      <div class="layer-title">Monitoring & Intelligence</div>
+      <div class="layer-tag">futuro</div>
+    </div>
+    <div class="cards">
+      <div class="card">
+        <div class="card-icon">📋</div>
+        <div class="card-name">Dashboard</div>
+        <div class="card-detail">
+          Spreads real-time (6 exchanges)<br>
+          P&L acumulado<br>
+          Slippage real vs estimado<br>
+          Histórico de oportunidades
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-icon">🧠</div>
+        <div class="card-name">Meta-Intelligence</div>
+        <div class="card-detail">
+          Aprende padrões de spread<br>
+          Otimiza thresholds<br>
+          Prediz janelas de oportunidade<br>
+          <span class="info">A IA que aprende sozinha</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- TIMELINE -->
+<div class="timeline">
+  <h2>⏰ Ciclos de Coleta & Processamento</h2>
+
+  <div class="tl-row">
+    <div class="tl-freq" style="color: #7ee787;">8h</div>
+    <div style="flex: 1;">
+      <div class="tl-bar" style="width: 100%; background: linear-gradient(90deg, #238636 0%, #2ea043 100%);"></div>
+    </div>
+    <div class="tl-label">Funding Rates — settlement 00/08/16 UTC</div>
+    <div class="tl-cron">10 0,8,16 * * *</div>
+  </div>
+
+  <div class="tl-row">
+    <div class="tl-freq" style="color: #d29922;">1h</div>
+    <div style="flex: 1;">
+      <div class="tl-bar" style="width: 70%; background: linear-gradient(90deg, #9e6a03 0%, #d29922 100%);"></div>
+    </div>
+    <div class="tl-label">Order Book snapshots — top 10 levels</div>
+    <div class="tl-cron">2 * * * *</div>
+  </div>
+
+  <div class="tl-row">
+    <div class="tl-freq" style="color: #58a6ff;">5min</div>
+    <div style="flex: 1;">
+      <div class="tl-bar" style="width: 40%; background: linear-gradient(90deg, #1158c7 0%, #58a6ff 100%); opacity: 0.4;"></div>
+    </div>
+    <div class="tl-label" style="color: #484f58;">Klines OHLCV — Fase 3 (futuro)</div>
+    <div class="tl-cron" style="color: #30363d;">*/5 * * * *</div>
+  </div>
+
+  <div class="tl-row">
+    <div class="tl-freq" style="color: #8b949e;">1h</div>
+    <div style="flex: 1;">
+      <div class="tl-bar" style="width: 50%; background: #30363d; opacity: 0.4;"></div>
+    </div>
+    <div class="tl-label" style="color: #484f58;">Open Interest — Fase 4 (futuro)</div>
+    <div class="tl-cron" style="color: #30363d;">5 * * * *</div>
+  </div>
+
+  <div class="tl-row">
+    <div class="tl-freq" style="color: #8b949e;">8h</div>
+    <div style="flex: 1;">
+      <div class="tl-bar" style="width: 60%; background: #30363d; opacity: 0.4;"></div>
+    </div>
+    <div class="tl-label" style="color: #484f58;">Signal Engine — após cada funding (futuro)</div>
+    <div class="tl-cron" style="color: #30363d;">15 0,8,16 * * *</div>
+  </div>
+</div>
+
+<!-- STRATEGY -->
+<div class="strategy">
+  <h2>Estratégia: Delta-Neutral Funding Arbitrage</h2>
+
+  <div class="strat-flow">
+    <div class="strat-step">
+      <div class="num">1. DETECT</div>
+      <div class="act">Spread &gt; Threshold</div>
+      <div class="det">Ex: OKX -0.03% vs Binance -0.01%</div>
+    </div>
+    <div class="strat-arrow">→</div>
+    <div class="strat-step">
+      <div class="num">2. VALIDATE</div>
+      <div class="act">Slippage Check</div>
+      <div class="det">Book depth suporta $1k?</div>
+    </div>
+    <div class="strat-arrow">→</div>
+    <div class="strat-step">
+      <div class="num">3. ENTER</div>
+      <div class="act">Long + Short</div>
+      <div class="det">Spot baixo FR / Perp alto FR</div>
+    </div>
+    <div class="strat-arrow">→</div>
+    <div class="strat-step">
+      <div class="num">4. COLLECT</div>
+      <div class="act">Funding Payments</div>
+      <div class="det">A cada 8h, delta-neutral</div>
+    </div>
+    <div class="strat-arrow">→</div>
+    <div class="strat-step">
+      <div class="num">5. EXIT</div>
+      <div class="act">Spread Closes</div>
+      <div class="det">Unwind ambas as pernas</div>
+    </div>
+  </div>
+
+  <div class="strat-math">
+    <strong>Exemplo (números reais do Data Lake — Fase 1):</strong><br><br>
+    <span class="formula">Spread detectado:</span> OKX (-0.0189%) vs Gate.io (-0.0100%) = <span class="hl">0.0089%</span> por ciclo<br>
+    <span class="formula">Anualizado:</span> 0.0089% × 3 ciclos/dia × 365 = <span class="hl">~9.7% a.a.</span><br><br>
+    <span class="neg">Custos por round-trip:</span><br>
+    &nbsp;&nbsp;Maker fee (×2 legs): ~0.02% × 2 = <span class="neg">0.04%</span><br>
+    &nbsp;&nbsp;Slippage estimado: ~<span class="neg">0.01%</span><br>
+    &nbsp;&nbsp;Transfer/withdraw: ~<span class="neg">$5-10</span> flat<br><br>
+    <span class="result">Break-even:</span> precisa ~5 ciclos (40h) só para cobrir entry+exit fees<br>
+    <span class="result">Profitable hold:</span> >3 dias com spread estável ≥ 0.008%
+  </div>
+
+  <div class="dataflow" style="margin-top: 20px;">
+    <h3>Storage (Parquet particionado)</h3>
+    <table class="df-table">
+      <tr><th>Dataset</th><th>Partição</th><th>Frequência</th><th>Status</th></tr>
+      <tr>
+        <td class="mono">funding_rate/</td>
+        <td>exchange=X/date=YYYY-MM-DD</td>
+        <td>8h</td>
+        <td><span class="status done">LIVE</span></td>
+      </tr>
+      <tr>
+        <td class="mono">order_book/</td>
+        <td>exchange=X/date=YYYY-MM-DD</td>
+        <td>1h</td>
+        <td><span class="status next">DEPLOY</span></td>
+      </tr>
+      <tr>
+        <td class="mono">klines/</td>
+        <td>exchange=X/date=YYYY-MM-DD</td>
+        <td>5min</td>
+        <td><span class="status future">FASE 3</span></td>
+      </tr>
+      <tr>
+        <td class="mono">oi/</td>
+        <td>exchange=X/date=YYYY-MM-DD</td>
+        <td>1h</td>
+        <td><span class="status future">FASE 4</span></td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+<!-- INFRA -->
+<div class="layer" style="margin-top: 32px;">
+  <div class="layer-header">
+    <div class="layer-num" style="background: #6e40c9;">∞</div>
+    <div class="layer-title">Infraestrutura</div>
+  </div>
+  <div class="cards">
+    <div class="card">
+      <div class="card-name">EC2 t3.small</div>
+      <div class="card-detail">
+        sa-east-1 (São Paulo)<br>
+        IP: 54.232.162.161<br>
+        20GB EBS (4GB free)<br>
+        Ubuntu 22.04
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-name">Data Lake repo</div>
+      <div class="card-detail">
+        <span class="mono">Data_Lake_Arbitragem</span><br>
+        Python 3.11 + pandas + pyarrow<br>
+        supercronic (Docker) ou crontab<br>
+        40/40 testes
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-name">AI.hab repo</div>
+      <div class="card-detail">
+        <span class="mono">btc_AI</span> (spot trading)<br>
+        Kedro pipeline + Docker<br>
+        62/62 testes<br>
+        Roda em paralelo no mesmo EC2
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-name">Custo</div>
+      <div class="card-detail">
+        EC2: ~$15/mês<br>
+        APIs: <span class="hl">$0</span> (públicas)<br>
+        CoinGlass: $29/mês (AI.hab macro)<br>
+        Total: ~$44/mês
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
