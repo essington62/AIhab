@@ -859,7 +859,7 @@ def main():
     # =========================================================================
     # SECTION 1: HEADER
     # =========================================================================
-    sig_class = {"ENTER": "signal-enter", "HOLD": "signal-hold", "BLOCK": "signal-block", "FILTERED": "signal-filter"}.get(signal, "neut")
+    sig_class = {"ENTER": "signal-enter", "ENTER_BOT2": "signal-enter", "HOLD": "signal-hold", "BLOCK": "signal-block", "FILTERED": "signal-filter"}.get(signal, "neut")
     price_c   = "pos" if pct_24h >= 0 else "neg"
     regime_c  = {"Bull": "pos", "Bear": "neg", "Sideways": "warn"}.get(regime, "neut")
     fed_note  = f"Fed: {fomc['next_event']} em {fomc['days_away']}d" if fomc["next_event"] else "Fed: sem eventos próximos"
@@ -892,7 +892,7 @@ def main():
   <span class="header-item">F&G: <span class="header-value">{fg_val:.0f}</span> {fg_cls}</span>
   <span class="header-item">R5C: <span class="{regime_c} header-value">{regime}</span></span>
   {_ma200_header_html}
-  <span class="header-item">Gate: <span class="{sig_class}">{signal}</span></span>
+  <span class="header-item">Gate: <span class="{sig_class}">{"ENTER (Bot2 Mom)" if signal == "ENTER_BOT2" else signal}</span></span>
   <span class="header-item">Score: <span class="header-value">{score:.3f}</span> / {threshold:.1f}</span>
   <span class="header-item">Capital: <span class="header-value">${capital:,.0f}</span></span>
   <span class="{'warn' if fomc['days_away'] < 5 else 'header-item'}">{fed_note}</span>
@@ -1696,7 +1696,7 @@ def main():
 <div class="cg-card" style="text-align:center;">
   <div class="cg-card-title">Posição</div>
   <div class="cg-card-value {'pos' if has_pos else 'neut'}">{'ABERTA' if has_pos else 'SEM POSIÇÃO'}</div>
-  <div class="cg-card-sub">{f'Entrada: ${entry_px:,.0f}' if entry_px else '—'}</div>
+  <div class="cg-card-sub">{f"Entrada: ${entry_px:,.0f} [{portfolio.get('entry_bot','bot1').upper()}]" if entry_px else '—'}</div>
 </div>""", unsafe_allow_html=True)
     with pt_c3:
         st.markdown(f"""
@@ -1708,7 +1708,7 @@ def main():
     with pt_c4:
         n_entries = 0
         if not cycle_log_df.empty and "signal" in cycle_log_df.columns:
-            n_entries = int((cycle_log_df["signal"] == "ENTER").sum())
+            n_entries = int(cycle_log_df["signal"].isin(["ENTER", "ENTER_BOT2"]).sum())
         st.markdown(f"""
 <div class="cg-card" style="text-align:center;">
   <div class="cg-card-title">Sinais ENTER</div>
@@ -1763,6 +1763,42 @@ def main():
             f'</div>',
             unsafe_allow_html=True,
         )
+
+    # ── Bot 2 Momentum/Liquidez panel ──────────────────────────────────────
+    _mf_params = _params.get("momentum_filter", {})
+    if _mf_params.get("enabled", False):
+        with st.expander("🚀 Bot 2 — Momentum/Liquidez", expanded=False):
+            _stable_z  = portfolio.get("last_momentum_stablecoin_z") or zs.get("stablecoin_z", 0)
+            _ret1d_val = portfolio.get("last_filter_ret_1d")
+            _rsi_val   = rsi_14
+            _bb_val    = bb_pct
+            _close_val = price
+            _ma21_val  = _latest(spot_df, "ma_21", 0.0) if not spot_df.empty else 0.0
+            _sz_min    = _mf_params.get("stablecoin_z_min", 1.3)
+            _above_ma21 = (_close_val > _ma21_val) if _close_val and _ma21_val else False
+
+            _bc1, _bc2, _bc3, _bc4, _bc5 = st.columns(5)
+            _bc1.metric("Stablecoin Z", f"{_stable_z:.2f}", delta="✓" if _stable_z > _sz_min else "✗")
+            _bc2.metric("ret_1d", f"{_ret1d_val*100:.2f}%" if _ret1d_val is not None else "N/A",
+                        delta="✓" if _ret1d_val and _ret1d_val > 0 else "✗")
+            _bc3.metric("RSI", f"{_rsi_val:.1f}", delta="✓" if _rsi_val > 50 else "✗")
+            _bc4.metric("BB%", f"{_bb_val:.3f}", delta="✓" if _bb_val < 0.98 else "✗")
+            _bc5.metric(">MA21", "Yes" if _above_ma21 else "No", delta="✓" if _above_ma21 else "✗")
+
+            _all_pass = (
+                _stable_z > _sz_min and
+                _ret1d_val is not None and _ret1d_val > 0 and
+                _rsi_val > 50 and _bb_val < 0.98 and _above_ma21
+            )
+            if has_pos and portfolio.get("entry_bot") == "bot2":
+                st.success("🟢 Bot 2 POSIÇÃO ABERTA")
+            elif has_pos:
+                st.warning("Bot 1 tem posição — Bot 2 bloqueado (mutex)")
+            elif _all_pass:
+                st.success("✅ Todas as condições atendidas — aguardando próximo ciclo")
+            else:
+                _m_reason = portfolio.get("last_momentum_reason", "")
+                st.info(f"Bot 2 aguardando condições | {_m_reason}")
 
     if has_pos and entry_px:
         _stops_mode  = portfolio.get("stops_mode", "fixed")

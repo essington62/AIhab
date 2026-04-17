@@ -1,0 +1,174 @@
+# AI.hab — Resumo do Projeto
+
+**Data:** 17 de abril de 2026
+**Status:** Em produção (paper trading), EC2 São Paulo
+
+---
+
+## O que é o AI.hab
+
+Sistema de trading BTC spot que combina análise macro, posicionamento de mercado, liquidez, sentimento e técnica para identificar momentos de entrada com edge estatístico. Roda em ciclo horário na AWS, com dashboard em tempo real e paper trading ativo.
+
+Nome: AI.hab — Capitão Ahab caçando baleias com inteligência artificial.
+
+## Infraestrutura
+
+**AWS EC2** t3.small em sa-east-1 (São Paulo), IP 54.232.162.161. Dois containers Docker via Docker Compose: `aihab-app` (cron + trading engine) e `aihab-dashboard` (Streamlit na porta 8501). Supercronic gerencia 4 cron jobs: ciclo horário (:05), daily update (07:00 UTC), daily observation (01:00 UTC), e check stops (:20/:35/:50).
+
+**GitHub:** github.com/essington62/AIhab.git
+
+**Codebase:** 6.803 linhas de código Python em 27 módulos (`src/`), 1.893 linhas de testes em 6 arquivos, 18 prompts documentados em `prompts/`.
+
+---
+
+## Arquitetura do Sistema
+
+### Ciclo Horário (a cada hora, :05)
+
+O ciclo completo dura ~30 segundos e faz: ingestão de dados (Binance spot 1h, CoinGlass futures 4h, Binance L/S ratio, News RSS + DeepSeek), limpeza e resampling para grid 1h, cálculo de indicadores técnicos (BB, RSI, ATR, MAs), cálculo de z-scores dos gates, avaliação do regime R5C HMM + MA200 override, scoring dos 11 gates em 6 clusters, decisão de ENTER/HOLD/BLOCK, e execução de stops se houver posição aberta.
+
+### Ciclo Diário (07:00 UTC)
+
+Atualiza dados de menor frequência: FRED (taxas de juros DGS10, DGS2, RRP), CoinGlass (stablecoin mcap, bubble index, ETF flows), Alt.me (Fear & Greed), yfinance (VIX, DXY, Oil, S&P500), e re-fit do HMM com candle diário fechado.
+
+### Ciclo de Stops (a cada 15 minutos)
+
+Checagem leve (~2 segundos) que só verifica preço atual vs stops configurados. Não recalcula scores. Implementado com lock file para evitar race condition com o ciclo horário.
+
+---
+
+## Gate Scoring v2 — Os 11 Gates
+
+O sistema avalia 11 "gates" (indicadores) agrupados em 6 clusters, cada um com caps anti-double-counting.
+
+**G0 Regime** (daily) — R5C HMM + MA200 override. Bear = BLOCK, Sideways = multiplier configurável, Bull = pass-through.
+
+**G1 Technical** (1h) — Bollinger Bands %B + RSI-14 em buckets validados walk-forward (208 sinais, 2025+). Não é tanh — usa scoring discreto.
+
+**G2 News** (1h) — Split crypto + Fed. Google News RSS classificado por DeepSeek (~$2/mês).
+
+**G3 Macro** (daily) — DGS10, DGS2, yield curve 2y10y, RRP. Tanh contínuo.
+
+**G4 Positioning** (4h) — OI agregado cross-exchange. O gate mais forte (correlação -0.472, peso 2.0).
+
+**G5 Liquidity** (daily) — Stablecoin market cap. Melhor preditor 7d (correlação +0.50, peso 1.5).
+
+**G6 Bubble** (daily) — Bubble index. Zerado no paper trading (monitoring only).
+
+**G7 ETF Flows** (daily) — Fluxo acumulado 7d. 2º melhor preditor (correlação +0.48, peso 1.5).
+
+**G8 Fear & Greed** (daily) — Contrarian, janela 252d.
+
+**G9 Taker** (4h) — Taker buy/sell ratio. Peso reduzido para 0.3 (correlação 2026 = 0.06).
+
+**G10 Funding** (4h) — Funding rate OI-weighted. Peso 0.5, sensibilidade baixa.
+
+### Kill Switches
+
+Bloqueiam entrada independente do score: BB > 0.80 (sobrecompra), OI z > 2.5 (posicionamento extremo), News < -3.0 (bear forte), Fed FOMC hawkish.
+
+### Threshold Dinâmico
+
+Quantile 75% do histórico de scores dos últimos 90 dias, com floor 2.0 e ceiling 5.0. Ajustado pelo Fed Sentinel (proximity adjustment para FOMC).
+
+---
+
+## Implementações Realizadas (cronologia)
+
+### v1.0 — Sistema Base (antes de abril 2026)
+
+Arquitetura completa: data layer (9 módulos de ingestão), features (technical, gate_features, fed_sentinel), models (R5C HMM, gate scoring), trading (paper_trader, execution), dashboard (Streamlit, 9 seções, dark theme). Deploy AWS com Docker Compose.
+
+### Ajustes de Gates e Dashboard
+
+Whale tracking (Binance L/S ratio), ajuste de pesos de liquidez (G5, G7 aumentados), taker reduzido, MA200 override, Fed Observatory, kill switches refinados, AI Analyst (DeepSeek sob demanda).
+
+### Ativação do Paper Trading (12 abril)
+
+Sideways multiplier = 1.0 (pass-through), bubble index zerado, MAE/MFE tracking em todo trade. Capital inicial $10,000.
+
+**Primeiro trade:** Entrou e saiu com +1.57% ($10,000 → $10,156.96). Validou a abordagem rule-based.
+
+### Ciclo de Stops 15 minutos (13 abril)
+
+Problema: ciclo de 1h demorava para detectar stops atingidos. Solução: `check_stops_only()` roda a cada 15 min, checagem leve (~2s), lock file com `fcntl.flock`. 34 testes, deployed.
+
+### ATR-based Dynamic Stops (14 abril)
+
+Stops adaptativos baseados em volatilidade. SL = 2.0 × ATR%, TP = 1.5 × ATR%, Trailing = 1.0 × ATR%. Clamps de segurança (min 1%, max 6%). Fallback para stops fixos se ATR indisponível. 45 testes, deployed.
+
+### Fix Dashboard Loading (14 abril)
+
+Resolução do problema de tela cinza no primeiro acesso. CORS fix, sleep bug, spinner adicionado.
+
+### Data Lake Phase 2 — Order Book (15 abril)
+
+Deploy no EC2 da coleta de order book de 6 exchanges (Binance, OKX, Bybit, Gate, Bitget, KuCoin). Cron a cada hora.
+
+### Estudo Estatístico — Regime Supervisionado (16-17 abril)
+
+Estudo completo com 833 dias de dados (Jan 2024 — Abr 2026), documentado em `estudo-regime-supervisionado-resultados.md`. Descobertas principais:
+
+1. Features individuais (z-scores dos gates) não predizem trades de 1% SG/SL — ML supervisionado (RF, GB) não bateu o baseline.
+2. SG/SL de 1% é ruído no BTC (ATR% ~1.2%, dentro de 1 desvio padrão).
+3. O score combinado tem edge fraco mas real com SG 2%/SL 1.5%.
+4. **Descoberta principal:** Score > 2.5 + RSI < 35 + ret_1d > -1% transforma o sistema de breakeven (WR 42%, PF 0.96) para fortemente lucrativo (WR 63%, PF 2.31, +29.5%, MaxDD -4.5%).
+
+### Reversal Filter (17 abril) — DEPLOYED HOJE
+
+Implementação do filtro de reversão como camada pós-scoring. O scoring continua gerando ENTER/HOLD/BLOCK normalmente. Quando diz ENTER, o filtro verifica RSI < 35 e ret_1d > -1% antes de executar. Inclui: extreme capitulation override (RSI < 25 bypassa ret_1d), múltiplos reasons acumulados para debug, filter state persistido em todo ciclo, sinal FILTERED no dashboard. 27 testes, deployed.
+
+---
+
+## Decisão Estratégica: Foco em Spot com ETFs
+
+Abandono da arbitragem de funding rate. Foco em trading spot de criptomoedas com ETFs aprovados: BTC (já operando), SOL (ETF aprovado Out 2025), XRP (Nov 2025), DOGE (Nov 2025). Expansão multi-asset após consolidação do BTC.
+
+---
+
+## Estado Atual do Sistema
+
+**Capital:** $10,156.96 (um trade fechado, +1.57%)
+
+**Último ciclo (17/04 15:05 UTC):** BLOCK, score -1.877, BB%=1.000, RSI=82.4, ret_1d=+4.9%. BTC a $77,698, no topo da Bollinger Band. Kill switch BB_TOP ativo corretamente.
+
+**Reversal filter:** Em produção, calculando RSI e ret_1d a cada ciclo. Esperando o próximo setup de reversão (BTC precisa corrigir, RSI cair abaixo de 35, queda desacelerar).
+
+**Regime:** R5C HMM em Sideways (como quase sempre). MA200 override não ativo (preço +6.1% acima da MA200). O regime está efetivamente neutralizado (multiplicador 1.0) e não é prioridade — o reversal filter cobre essa função melhor.
+
+---
+
+## Pipeline Pendente
+
+**Pronto para rodar (prompt gerado):**
+- Fix dashboard loading mais robusto (se necessário)
+
+**Médio prazo (após 20+ trades):**
+- Análise de MAE/MFE reais para otimizar stops
+- Feature engineering de interações (score_total como feature, combinações BB×RSI, OI×Funding)
+- Modelo de saída (quando sair, não quando entrar)
+
+**Longo prazo:**
+- Expansão multi-asset: SOL, XRP, DOGE (replicar gate scoring adaptado)
+- G11 Reversal Gate: transformar filtro binário em gate contínuo com peso
+- Ensemble: scoring rule-based + ML para refinamento de confiança
+- Position sizing variável (menor em bear, maior em bull)
+
+---
+
+## Arquivos de Referência
+
+| Arquivo | Conteúdo |
+|---------|----------|
+| `CLAUDE.md` | Spec completa do projeto (arquitetura, gates, parâmetros, deploy) |
+| `conf/parameters.yml` | Todos os parâmetros tunáveis (gates, stops, thresholds, filtros) |
+| `prompts/estudo-regime-supervisionado-resultados.md` | Estudo estatístico completo com resultados do reversal filter |
+| `prompts/prompt-reversal-filter.md` | Prompt de implementação do reversal filter |
+| `prompts/prompt-atr-dynamic-stops.md` | Prompt de implementação dos stops dinâmicos |
+| `prompts/prompt-15min-stop-check.md` | Prompt do ciclo de stops 15 minutos |
+
+---
+
+## Filosofia
+
+O mercado crypto não tem memória longa. ML supervisionado falhou nos dados que temos. A abordagem correta: regras estatísticas validadas + pesos em YAML + validação contínua + filtros de timing. Adaptação sobre previsão. Qualidade sobre quantidade de trades. O Robin Hood do BTC.

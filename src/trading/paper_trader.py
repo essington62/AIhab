@@ -171,6 +171,7 @@ def append_score_history(result: dict) -> None:
         "signal": result.get("signal"),
         "block_reason": result.get("block_reason"),
         "proximity_adj": result.get("proximity_adj", 0.0),
+        "entry_bot": result.get("entry_bot"),
     }])
 
     if path.exists():
@@ -235,6 +236,14 @@ def log_cycle(
             f"CYCLE [{cycle_ts}]: ENTER "
             f"score={result.get('score')} vs thr={result.get('threshold')} | "
             f"RSI={technical.get('rsi_14')} ret_1d={technical.get('ret_1d')} | "
+            f"capital=${portfolio.get('capital_usd'):.2f} pos={portfolio.get('has_position')}"
+        )
+    elif _sig == "ENTER_BOT2":
+        logger.info(
+            f"CYCLE [{cycle_ts}]: ENTER_BOT2 "
+            f"stablecoin_z={portfolio.get('entry_stablecoin_z', '?')} | "
+            f"close={technical.get('close')} bb={technical.get('bb_pct')} "
+            f"rsi={technical.get('rsi_14')} | "
             f"capital=${portfolio.get('capital_usd'):.2f} pos={portfolio.get('has_position')}"
         )
     else:
@@ -332,6 +341,7 @@ def _init_trade_tracking(
     portfolio["entry_trailing_stop_pct"] = portfolio.get("trailing_stop_pct_actual") or params["trailing_stop_pct"]
     portfolio["entry_stops_mode"] = portfolio.get("stops_mode", "fixed")
     portfolio["entry_atr_pct"] = portfolio.get("entry_atr_pct")
+    portfolio.setdefault("entry_bot", "bot1")
 
 
 def _hours_since_entry(entry_time: pd.Timestamp, ts_str: Optional[str]) -> Optional[float]:
@@ -382,6 +392,9 @@ def _build_trade_record(portfolio: dict, exit_price: float, exit_reason: str) ->
         "entry_atr": portfolio.get("entry_atr"),
         "entry_ret_1d": portfolio.get("entry_ret_1d"),
         "entry_filter_passed": portfolio.get("entry_filter_passed", True),
+        "entry_bot": portfolio.get("entry_bot", "bot1"),
+        "entry_stablecoin_z": portfolio.get("entry_stablecoin_z"),
+        "entry_max_hold_hours": portfolio.get("entry_max_hold_hours"),
         "entry_oi_z": portfolio.get("entry_oi_z"),
         "entry_fg_raw": portfolio.get("entry_fg_raw"),
         "entry_cluster_technical": portfolio.get("entry_cluster_technical"),
@@ -443,6 +456,87 @@ def _save_completed_trade(record: dict) -> None:
 # ---------------------------------------------------------------------------
 # Reversal filter (entry confirmation — applied after scoring says ENTER)
 # ---------------------------------------------------------------------------
+
+def check_momentum_filter(technical: dict, zscores: dict, params: dict) -> dict:
+    """
+    Bot 2 — Momentum/Liquidez filter.
+    Entry when stablecoin liquidity is flowing in + market in uptrend.
+    Independent of gate scoring — runs as alternative entry path.
+
+    Conditions (ALL must be true):
+      1. stablecoin_z > 1.3 (strong liquidity inflow)
+      2. ret_1d > 0 (positive momentum)
+      3. RSI > 50 (bullish zone)
+      4. close > MA21 (short-term uptrend)
+      5. BB% < 0.98 (not a blow-off top)
+    """
+    mf = params.get("momentum_filter", {})
+
+    if not mf.get("enabled", False):
+        return {"passed": False, "reason": "filter_disabled"}
+
+    stablecoin_z = zscores.get("stablecoin_z")
+    ret_1d = technical.get("ret_1d")
+    rsi = technical.get("rsi_14")
+    bb_pct = technical.get("bb_pct")
+    close = technical.get("close")
+    ma_21 = technical.get("ma_21")
+
+    sz_min = mf.get("stablecoin_z_min", 1.3)
+    ret_min = mf.get("ret_1d_min", 0.0)
+    rsi_min = mf.get("rsi_min", 50)
+    bb_max = mf.get("bb_pct_max", 0.98)
+    require_ma21 = mf.get("require_above_ma21", True)
+
+    result = {
+        "stablecoin_z": stablecoin_z,
+        "ret_1d": ret_1d,
+        "rsi": rsi,
+        "bb_pct": bb_pct,
+        "close": close,
+        "ma_21": ma_21,
+        "sz_min": sz_min,
+        "ret_min": ret_min,
+        "rsi_min": rsi_min,
+        "bb_max": bb_max,
+    }
+
+    if stablecoin_z is None or ret_1d is None or rsi is None or bb_pct is None:
+        result["passed"] = False
+        result["reason"] = "MISSING_DATA"
+        return result
+
+    if require_ma21 and (close is None or ma_21 is None):
+        result["passed"] = False
+        result["reason"] = "MISSING_MA21"
+        return result
+
+    reasons = []
+
+    if stablecoin_z <= sz_min:
+        reasons.append(f"LOW_LIQUIDITY (stable_z={stablecoin_z:.2f} <= {sz_min})")
+
+    if ret_1d <= ret_min:
+        reasons.append(f"NEG_MOMENTUM (ret_1d={ret_1d:.4f} <= {ret_min})")
+
+    if rsi <= rsi_min:
+        reasons.append(f"RSI_LOW (RSI={rsi:.1f} <= {rsi_min})")
+
+    if bb_pct >= bb_max:
+        reasons.append(f"BLOW_OFF_TOP (BB={bb_pct:.3f} >= {bb_max})")
+
+    if require_ma21 and close <= ma_21:
+        reasons.append(f"BELOW_MA21 (close={close:.0f} <= MA21={ma_21:.0f})")
+
+    if reasons:
+        result["passed"] = False
+        result["reason"] = " & ".join(reasons)
+        return result
+
+    result["passed"] = True
+    result["reason"] = "momentum_confirmed"
+    return result
+
 
 def check_reversal_filter(technical: dict, params: dict) -> dict:
     """
@@ -591,6 +685,43 @@ def check_stops_only() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Bot 2 entry execution
+# ---------------------------------------------------------------------------
+
+def _execute_bot2_entry(current_price: float, portfolio: dict, mf_params: dict) -> dict:
+    """Execute Bot 2 entry with its own fixed stops (not ATR-based)."""
+    params = get_params()["execution"]
+    capital = portfolio["capital_usd"]
+    size_pct = params["position_size_pct"]
+
+    position_value = capital * size_pct
+    quantity = position_value / current_price
+
+    sl_pct = mf_params.get("stop_loss_pct", 0.015)
+    tp_pct = mf_params.get("take_profit_pct", 0.02)
+    trail_pct = mf_params.get("trailing_stop_pct", 0.01)
+
+    portfolio["has_position"] = True
+    portfolio["entry_price"] = round(current_price, 2)
+    portfolio["entry_time"] = str(pd.Timestamp.utcnow())
+    portfolio["quantity"] = round(quantity, 6)
+    portfolio["trailing_high"] = round(current_price, 2)
+    portfolio["stop_loss_price"] = round(current_price * (1 - sl_pct), 2)
+    portfolio["take_profit_price"] = round(current_price * (1 + tp_pct), 2)
+    portfolio["trailing_stop_pct_actual"] = trail_pct
+    portfolio["stops_mode"] = "bot2_fixed"
+    portfolio["entry_atr_pct"] = None
+    portfolio["last_updated"] = str(pd.Timestamp.utcnow())
+
+    atomic_write_json(portfolio, get_path("portfolio_state"))
+    logger.info(
+        f"BOT2 ENTRY: price={current_price:.2f}, qty={quantity:.6f}, "
+        f"SL={portfolio['stop_loss_price']}, TP={portfolio['take_profit_price']} [bot2_fixed]"
+    )
+    return portfolio
+
+
+# ---------------------------------------------------------------------------
 # Main cycle
 # ---------------------------------------------------------------------------
 
@@ -683,7 +814,30 @@ def run_cycle() -> dict:
             # Reload after potential state change
             portfolio = load_portfolio()
 
-        # Entry decision (scoring says ENTER → apply reversal filter)
+        # Entry decision
+        bot_entered = None
+        mf_check = {"passed": False, "reason": "not_evaluated", "stablecoin_z": None}
+
+        # Bot 2 max hold timeout check (runs before entry, while position is open)
+        if portfolio["has_position"]:
+            entry_bot = portfolio.get("entry_bot", "bot1")
+            if entry_bot == "bot2":
+                max_hold_h = portfolio.get("entry_max_hold_hours", 120)
+                entry_time_str = portfolio.get("entry_time", "")
+                if entry_time_str:
+                    entry_time_dt = parse_utc(entry_time_str)
+                    hours_in_trade = (cycle_ts - entry_time_dt).total_seconds() / 3600
+                    if hours_in_trade >= max_hold_h:
+                        completed_trade = _build_trade_record(portfolio, current_price, "bot2_timeout")
+                        portfolio = execute_exit(current_price, portfolio, "bot2_timeout")
+                        _save_completed_trade(completed_trade)
+                        portfolio = load_portfolio()
+                        logger.info(
+                            f"BOT2 TIMEOUT: {hours_in_trade:.0f}h >= {max_hold_h}h | "
+                            f"exit=${current_price:,.0f}"
+                        )
+
+        # Bot 1: Reversal — scoring says ENTER → apply reversal filter
         if result["signal"] == "ENTER" and not portfolio["has_position"]:
             rf_check = check_reversal_filter(technical, params)
 
@@ -693,15 +847,17 @@ def run_cycle() -> dict:
                 _init_trade_tracking(portfolio, result, regime, technical, zscores)
                 portfolio["entry_ret_1d"] = rf_check["ret_1d"]
                 portfolio["entry_filter_passed"] = True
+                portfolio["entry_bot"] = "bot1"
                 atomic_write_json(portfolio, get_path("portfolio_state"))
+                bot_entered = "bot1"
                 logger.info(
-                    f"ENTRY CONFIRMED: score={result.get('score', 0):.3f} | "
+                    f"BOT1 ENTRY CONFIRMED: score={result.get('score', 0):.3f} | "
                     f"RSI={rf_check['rsi']:.1f} (<{rf_check['rsi_max']}) | "
                     f"ret_1d={rf_check['ret_1d']:.4f} (>{rf_check['ret_1d_min']})"
                 )
             else:
                 logger.info(
-                    f"ENTRY FILTERED: score={result.get('score', 0):.3f} | "
+                    f"BOT1 ENTRY FILTERED: score={result.get('score', 0):.3f} | "
                     f"RSI={rf_check['rsi']} | ret_1d={rf_check['ret_1d']} → "
                     f"{rf_check['reason']}"
                 )
@@ -709,6 +865,33 @@ def run_cycle() -> dict:
                 result["filter_reason"] = rf_check["reason"]
                 result["filter_rsi"] = rf_check["rsi"]
                 result["filter_ret_1d"] = rf_check["ret_1d"]
+
+        # Bot 2: Momentum — independent of gate scoring, runs if no position and not Bear
+        if bot_entered is None and not portfolio["has_position"] and regime != "Bear":
+            mf_check = check_momentum_filter(technical, zscores, params)
+
+            if mf_check["passed"]:
+                mf_params = params.get("momentum_filter", {})
+                portfolio = _execute_bot2_entry(current_price, portfolio, mf_params)
+                _init_trade_tracking(portfolio, result, regime, technical, zscores)
+                portfolio["entry_bot"] = "bot2"
+                portfolio["entry_stablecoin_z"] = mf_check["stablecoin_z"]
+                portfolio["entry_filter_passed"] = True
+                portfolio["entry_max_hold_hours"] = mf_params.get("max_hold_hours", 120)
+                atomic_write_json(portfolio, get_path("portfolio_state"))
+                bot_entered = "bot2"
+                result["signal"] = "ENTER_BOT2"
+                logger.info(
+                    f"BOT2 ENTRY CONFIRMED: stablecoin_z={mf_check['stablecoin_z']:.2f} | "
+                    f"ret_1d={mf_check['ret_1d']:.4f} | RSI={mf_check['rsi']:.1f} | "
+                    f"BB={mf_check['bb_pct']:.3f}"
+                )
+            else:
+                if mf_check.get("stablecoin_z") and mf_check["stablecoin_z"] > 0.5:
+                    logger.info(
+                        f"BOT2 FILTERED: {mf_check['reason']} | "
+                        f"stable_z={mf_check.get('stablecoin_z')}"
+                    )
 
     # 11. Append score history
     append_score_history(result)
@@ -726,6 +909,10 @@ def run_cycle() -> dict:
     portfolio["last_filter_reason"] = result.get("filter_reason")
     portfolio["last_filter_rsi"] = technical.get("rsi_14")
     portfolio["last_filter_ret_1d"] = technical.get("ret_1d")
+    # Momentum filter state — persisted every cycle for dashboard/debug
+    portfolio["last_momentum_passed"] = result.get("signal") == "ENTER_BOT2"
+    portfolio["last_momentum_reason"] = mf_check.get("reason")
+    portfolio["last_momentum_stablecoin_z"] = zscores.get("stablecoin_z")
     atomic_write_json(portfolio, get_path("portfolio_state"))
 
     # 12. Log cycle
