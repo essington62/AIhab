@@ -1668,7 +1668,7 @@ def main():
     # SECTION 8: PAPER TRADING
     # =========================================================================
     st.markdown("---")
-    st.markdown("### 📋 Paper Trading")
+    st.markdown("### 📋 Paper Trading — Bot 1 (Reversal)")
 
     cycle_log_df = load_parquet("data/05_output/cycle_log.parquet")
 
@@ -1692,11 +1692,24 @@ def main():
   <div class="cg-card-sub {'pos' if capital >= 10000 else 'neg'}">{(capital/10000-1)*100:+.2f}% vs início</div>
 </div>""", unsafe_allow_html=True)
     with pt_c2:
+        _b1_entry_bot = portfolio.get("entry_bot", "bot1")
+        if has_pos and _b1_entry_bot == "bot2":
+            _b1_pos_label = "Bot 2 tem posição"
+            _b1_pos_sub   = "(mutex — aguardando saída do Bot 2)"
+            _b1_pos_class = "warn"
+        elif has_pos:
+            _b1_pos_label = "ABERTA"
+            _b1_pos_sub   = f"Entrada: ${entry_px:,.0f}" if entry_px else "—"
+            _b1_pos_class = "pos"
+        else:
+            _b1_pos_label = "SEM POSIÇÃO"
+            _b1_pos_sub   = "—"
+            _b1_pos_class = "neut"
         st.markdown(f"""
 <div class="cg-card" style="text-align:center;">
   <div class="cg-card-title">Posição</div>
-  <div class="cg-card-value {'pos' if has_pos else 'neut'}">{'ABERTA' if has_pos else 'SEM POSIÇÃO'}</div>
-  <div class="cg-card-sub">{f"Entrada: ${entry_px:,.0f} [{portfolio.get('entry_bot','bot1').upper()}]" if entry_px else '—'}</div>
+  <div class="cg-card-value {_b1_pos_class}">{_b1_pos_label}</div>
+  <div class="cg-card-sub">{_b1_pos_sub}</div>
 </div>""", unsafe_allow_html=True)
     with pt_c3:
         st.markdown(f"""
@@ -1708,12 +1721,12 @@ def main():
     with pt_c4:
         n_entries = 0
         if not cycle_log_df.empty and "signal" in cycle_log_df.columns:
-            n_entries = int(cycle_log_df["signal"].isin(["ENTER", "ENTER_BOT2"]).sum())
+            n_entries = int((cycle_log_df["signal"] == "ENTER").sum())
         st.markdown(f"""
 <div class="cg-card" style="text-align:center;">
   <div class="cg-card-title">Sinais ENTER</div>
   <div class="cg-card-value">{n_entries}</div>
-  <div class="cg-card-sub">total desde início</div>
+  <div class="cg-card-sub">Bot 1 desde início</div>
 </div>""", unsafe_allow_html=True)
 
     # ── Reversal filter state ──────────────────────────────────────────────
@@ -1764,43 +1777,9 @@ def main():
             unsafe_allow_html=True,
         )
 
-    # ── Bot 2 Momentum/Liquidez panel ──────────────────────────────────────
     _mf_params = _params.get("momentum_filter", {})
-    if _mf_params.get("enabled", False):
-        with st.expander("🚀 Bot 2 — Momentum/Liquidez", expanded=False):
-            _stable_z  = portfolio.get("last_momentum_stablecoin_z") or zs.get("stablecoin_z", 0)
-            _ret1d_val = portfolio.get("last_filter_ret_1d")
-            _rsi_val   = rsi_14
-            _bb_val    = bb_pct
-            _close_val = price
-            _ma21_val  = _latest(spot_df, "ma_21", 0.0) if not spot_df.empty else 0.0
-            _sz_min    = _mf_params.get("stablecoin_z_min", 1.3)
-            _above_ma21 = (_close_val > _ma21_val) if _close_val and _ma21_val else False
 
-            _bc1, _bc2, _bc3, _bc4, _bc5 = st.columns(5)
-            _bc1.metric("Stablecoin Z", f"{_stable_z:.2f}", delta="✓" if _stable_z > _sz_min else "✗")
-            _bc2.metric("ret_1d", f"{_ret1d_val*100:.2f}%" if _ret1d_val is not None else "N/A",
-                        delta="✓" if _ret1d_val and _ret1d_val > 0 else "✗")
-            _bc3.metric("RSI", f"{_rsi_val:.1f}", delta="✓" if _rsi_val > 50 else "✗")
-            _bc4.metric("BB%", f"{_bb_val:.3f}", delta="✓" if _bb_val < 0.98 else "✗")
-            _bc5.metric(">MA21", "Yes" if _above_ma21 else "No", delta="✓" if _above_ma21 else "✗")
-
-            _all_pass = (
-                _stable_z > _sz_min and
-                _ret1d_val is not None and _ret1d_val > 0 and
-                _rsi_val > 50 and _bb_val < 0.98 and _above_ma21
-            )
-            if has_pos and portfolio.get("entry_bot") == "bot2":
-                st.success("🟢 Bot 2 POSIÇÃO ABERTA")
-            elif has_pos:
-                st.warning("Bot 1 tem posição — Bot 2 bloqueado (mutex)")
-            elif _all_pass:
-                st.success("✅ Todas as condições atendidas — aguardando próximo ciclo")
-            else:
-                _m_reason = portfolio.get("last_momentum_reason", "")
-                st.info(f"Bot 2 aguardando condições | {_m_reason}")
-
-    if has_pos and entry_px:
+    if has_pos and entry_px and portfolio.get("entry_bot", "bot1") == "bot1":
         _stops_mode  = portfolio.get("stops_mode", "fixed")
         _atr_pct     = portfolio.get("entry_atr_pct")
         _trail_pct   = portfolio.get("trailing_stop_pct_actual")
@@ -1848,7 +1827,7 @@ def main():
         fig_eq = go.Figure()
         fig_eq.add_trace(go.Scatter(
             x=cl["timestamp"], y=cl["capital_usd"],
-            name="Paper Trading", line=dict(color=GREEN, width=2),
+            name="Bot 1 + Bot 2", line=dict(color=GREEN, width=2),
         ))
         if not bh_spot.empty:
             fig_eq.add_trace(go.Scatter(
@@ -1856,7 +1835,7 @@ def main():
                 name="Buy & Hold BTC", line=dict(color=AMBER, width=1.5, dash="dot"), opacity=0.7,
             ))
         fig_eq.add_hline(y=10000, line_color=GREY, opacity=0.3, annotation_text="$10k")
-        fig_eq.update_layout(**PLOTLY, height=250, title="Equity Curve vs Buy & Hold")
+        fig_eq.update_layout(**PLOTLY, height=250, title="Equity Curve Combinada (Bot 1 + Bot 2) vs Buy & Hold")
         st.plotly_chart(fig_eq, use_container_width=True)
 
         # ── Stats ─────────────────────────────────────────────────────────
@@ -1864,7 +1843,17 @@ def main():
         days_running = (cl["timestamp"].iloc[-1] - cl["timestamp"].iloc[0]).total_seconds() / 86400
         bh_ret = ((price / bh_start_price) - 1) * 100 if not bh_spot.empty else 0.0
 
-        stat_cols = st.columns(4)
+        all_trades_eq: list = []
+        _trades_path = ROOT / "data/05_output/completed_trades.json"
+        if _trades_path.exists():
+            try:
+                all_trades_eq = json.loads(_trades_path.read_text())
+            except Exception:
+                all_trades_eq = []
+        _n_bot1_eq = len([t for t in all_trades_eq if t.get("entry_bot", "bot1") == "bot1"])
+        _n_bot2_eq = len([t for t in all_trades_eq if t.get("entry_bot") == "bot2"])
+
+        stat_cols = st.columns(6)
         with stat_cols[0]:
             st.metric("Retorno Total", f"{total_ret:+.2f}%")
         with stat_cols[1]:
@@ -1873,8 +1862,174 @@ def main():
             st.metric("Alpha", f"{total_ret - bh_ret:+.2f}%")
         with stat_cols[3]:
             st.metric("Dias rodando", f"{days_running:.0f}d")
+        with stat_cols[4]:
+            st.metric("Trades Bot 1", _n_bot1_eq)
+        with stat_cols[5]:
+            st.metric("Trades Bot 2", _n_bot2_eq)
     else:
         st.info("Histórico insuficiente para equity curve (cycle_log vazio).")
+
+    # =========================================================================
+    # SECTION 9: PAPER TRADING — BOT 2 (MOMENTUM)
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 🚀 Paper Trading — Bot 2 (Momentum)")
+
+    if not _mf_params.get("enabled", False):
+        st.info("Bot 2 desabilitado (momentum_filter.enabled: false em parameters.yml).")
+    else:
+        _b2_entry_bot = portfolio.get("entry_bot", "bot1")
+        _b2_has_pos   = has_pos and _b2_entry_bot == "bot2"
+        _b2_bot1_pos  = has_pos and _b2_entry_bot == "bot1"
+
+        # ── Cards ─────────────────────────────────────────────────────────
+        b2c1, b2c2, b2c3, b2c4 = st.columns(4)
+        with b2c1:
+            st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">Capital</div>
+  <div class="cg-card-value">${capital:,.2f}</div>
+  <div class="cg-card-sub {'pos' if capital >= 10000 else 'neg'}">{(capital/10000-1)*100:+.2f}% vs início</div>
+</div>""", unsafe_allow_html=True)
+        with b2c2:
+            if _b2_has_pos:
+                _b2_pos_label = "ABERTA"
+                _b2_pos_sub   = f"Entrada: ${entry_px:,.0f}" if entry_px else "—"
+                _b2_pos_class = "pos"
+            elif _b2_bot1_pos:
+                _b2_pos_label = "Bot 1 tem posição"
+                _b2_pos_sub   = "(mutex — aguardando saída do Bot 1)"
+                _b2_pos_class = "warn"
+            else:
+                _b2_pos_label = "SEM POSIÇÃO"
+                _b2_pos_sub   = "—"
+                _b2_pos_class = "neut"
+            st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">Posição</div>
+  <div class="cg-card-value {_b2_pos_class}">{_b2_pos_label}</div>
+  <div class="cg-card-sub">{_b2_pos_sub}</div>
+</div>""", unsafe_allow_html=True)
+        with b2c3:
+            if _b2_has_pos and entry_px:
+                _b2_unr_pct = ((price / entry_px) - 1) * 100
+                _b2_unr_usd = (price - entry_px) * qty
+                _b2_pnl_class = "pos" if _b2_unr_pct >= 0 else "neg"
+                _b2_pnl_val  = f"{_b2_unr_pct:+.2f}%"
+                _b2_pnl_sub  = f"${_b2_unr_usd:+,.2f}"
+            else:
+                _b2_pnl_class = "neut"
+                _b2_pnl_val  = "—"
+                _b2_pnl_sub  = "—"
+            st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">P&L Não Realizado</div>
+  <div class="cg-card-value {_b2_pnl_class}">{_b2_pnl_val}</div>
+  <div class="cg-card-sub">{_b2_pnl_sub}</div>
+</div>""", unsafe_allow_html=True)
+        with b2c4:
+            _n_bot2_sig = 0
+            if not cycle_log_df.empty and "signal" in cycle_log_df.columns:
+                _n_bot2_sig = int((cycle_log_df["signal"] == "ENTER_BOT2").sum())
+            st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">Sinais ENTER_BOT2</div>
+  <div class="cg-card-value">{_n_bot2_sig}</div>
+  <div class="cg-card-sub">Bot 2 desde início</div>
+</div>""", unsafe_allow_html=True)
+
+        # ── Momentum Filter status bar ─────────────────────────────────────
+        _stable_z  = portfolio.get("last_momentum_stablecoin_z") or zs.get("stablecoin_z", 0)
+        _ret1d_val = portfolio.get("last_filter_ret_1d")
+        _rsi_val   = rsi_14
+        _bb_val    = bb_pct
+        _close_val = price
+        _ma21_val  = _latest(spot_df, "ma_21", 0.0) if not spot_df.empty else 0.0
+        _sz_min    = _mf_params.get("stablecoin_z_min", 1.3)
+        _above_ma21 = bool(_close_val and _ma21_val and _close_val > _ma21_val)
+
+        def _b2_cond(ok: bool, val: str) -> str:
+            col = "#3fb950" if ok else "#f85149"
+            sym = "✓" if ok else "✗"
+            return f"<span style='color:{col};'>{val} {sym}</span>"
+
+        _b2_all_pass = (
+            _stable_z > _sz_min and
+            _ret1d_val is not None and _ret1d_val > 0 and
+            _rsi_val > 50 and _bb_val < 0.98 and _above_ma21
+        )
+        _b2_pass_html = (
+            "<span style='color:#3fb950;'>✓ PASS</span>" if _b2_all_pass
+            else f"<span style='color:#f85149;'>✗ FILTERED ({portfolio.get('last_momentum_reason', '')})</span>"
+        )
+        _ret1d_str = f"{_ret1d_val*100:.2f}%" if _ret1d_val is not None else "N/A"
+        st.markdown(
+            f'<div class="cg-card" style="padding:8px 16px; font-size:12px;">'
+            f'<span style="color:#8b949e;">Momentum Filter: </span>{_b2_pass_html}'
+            f' &nbsp;|&nbsp; <span style="color:#8b949e;">Stablecoin Z: </span>'
+            f'{_b2_cond(_stable_z > _sz_min, f"{_stable_z:.2f} (>{_sz_min})")}'
+            f' &nbsp;|&nbsp; <span style="color:#8b949e;">ret_1d: </span>'
+            f'{_b2_cond(_ret1d_val is not None and _ret1d_val > 0, f"{_ret1d_str} (>0%)")}'
+            f' &nbsp;|&nbsp; <span style="color:#8b949e;">RSI: </span>'
+            f'{_b2_cond(_rsi_val > 50, f"{_rsi_val:.1f} (>50)")}'
+            f' &nbsp;|&nbsp; <span style="color:#8b949e;">BB%: </span>'
+            f'{_b2_cond(_bb_val < 0.98, f"{_bb_val:.3f} (<0.98)")}'
+            f' &nbsp;|&nbsp; <span style="color:#8b949e;">&gt;MA21: </span>'
+            f'{_b2_cond(_above_ma21, "Yes" if _above_ma21 else "No")}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        # ── Bot 2 stops (when entry_bot == "bot2") ────────────────────────
+        if _b2_has_pos and entry_px:
+            _b2_sl_pct  = 1.5
+            _b2_tp_pct  = 2.0
+            _b2_trail   = 1.0
+            _b2_max_h   = portfolio.get("entry_max_hold_hours", 120)
+            _b2_sl_px   = entry_px * (1 - _b2_sl_pct / 100)
+            _b2_tp_px   = entry_px * (1 + _b2_tp_pct / 100)
+            _b2_elapsed = 0.0
+            if entry_time:
+                try:
+                    _b2_et = pd.Timestamp(entry_time)
+                    if _b2_et.tzinfo is None:
+                        _b2_et = _b2_et.tz_localize("UTC")
+                    _b2_elapsed = (pd.Timestamp.now(tz="UTC") - _b2_et).total_seconds() / 3600
+                except Exception:
+                    pass
+            _b2_remain = max(0.0, _b2_max_h - _b2_elapsed)
+            st.markdown(f"""
+<div class="cg-card" style="padding:8px 16px; margin-bottom:8px; font-size:12px;">
+  <span style="color:#8b949e;">Stop Loss: </span><span class="neg">${_b2_sl_px:,.0f} ({_b2_sl_pct:.1f}% fixed)</span> &nbsp;|&nbsp;
+  <span style="color:#8b949e;">Take Profit: </span><span class="pos">${_b2_tp_px:,.0f} ({_b2_tp_pct:.1f}% fixed)</span> &nbsp;|&nbsp;
+  <span style="color:#8b949e;">Trailing: </span>{_b2_trail:.1f}% fixed &nbsp;|&nbsp;
+  <span style="color:#8b949e;">Quantidade: </span>{qty:.6f} BTC &nbsp;|&nbsp;
+  <span style="color:#8b949e;">Desde: </span>{entry_time} &nbsp;|&nbsp;
+  <span style="color:#8b949e;">Tempo: </span>{_b2_elapsed:.0f}h / {_b2_max_h}h max
+  ({_b2_remain:.0f}h restantes)
+</div>""", unsafe_allow_html=True)
+
+        # ── Equity curve combinada pointer ────────────────────────────────
+        st.caption("Equity curve combinada (Bot 1 + Bot 2) disponível acima.")
+
+        # ── Histórico de trades Bot 2 ─────────────────────────────────────
+        _b2_trades_path = ROOT / "data/05_output/completed_trades.json"
+        _b2_trades: list = []
+        if _b2_trades_path.exists():
+            try:
+                _all = json.loads(_b2_trades_path.read_text())
+                _b2_trades = [t for t in _all if t.get("entry_bot") == "bot2"]
+            except Exception:
+                _b2_trades = []
+
+        if _b2_trades:
+            _b2_df = pd.DataFrame(_b2_trades)[
+                ["entry_time", "entry_price", "exit_price", "pnl_pct", "exit_reason"]
+            ]
+            _b2_df.columns = ["Entrada", "Preço Entrada", "Preço Saída", "P&L %", "Motivo Saída"]
+            st.dataframe(_b2_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhum trade Bot 2 completado ainda.")
 
     st.caption(f"btc-trading-v1 | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | Auto-refresh: {'ON' if auto_refresh else 'OFF'}")
 
