@@ -222,13 +222,29 @@ def log_cycle(
 
     combined.to_parquet(path, index=False)
 
-    logger.info(
-        f"CYCLE [{cycle_ts}]: {result.get('signal')} "
-        f"score={result.get('score')} vs thr={result.get('threshold')} | "
-        f"close={technical.get('close')} bb={technical.get('bb_pct')} "
-        f"rsi={technical.get('rsi_14')} | "
-        f"capital=${portfolio.get('capital_usd'):.2f} pos={portfolio.get('has_position')}"
-    )
+    _sig = result.get("signal")
+    if _sig == "FILTERED":
+        logger.info(
+            f"CYCLE [{cycle_ts}]: FILTERED ({result.get('filter_reason', '?')}) "
+            f"score={result.get('score')} vs thr={result.get('threshold')} | "
+            f"RSI={result.get('filter_rsi')} ret_1d={result.get('filter_ret_1d')} | "
+            f"capital=${portfolio.get('capital_usd'):.2f} pos={portfolio.get('has_position')}"
+        )
+    elif _sig == "ENTER":
+        logger.info(
+            f"CYCLE [{cycle_ts}]: ENTER "
+            f"score={result.get('score')} vs thr={result.get('threshold')} | "
+            f"RSI={technical.get('rsi_14')} ret_1d={technical.get('ret_1d')} | "
+            f"capital=${portfolio.get('capital_usd'):.2f} pos={portfolio.get('has_position')}"
+        )
+    else:
+        logger.info(
+            f"CYCLE [{cycle_ts}]: {_sig} "
+            f"score={result.get('score')} vs thr={result.get('threshold')} | "
+            f"close={technical.get('close')} bb={technical.get('bb_pct')} "
+            f"rsi={technical.get('rsi_14')} | "
+            f"capital=${portfolio.get('capital_usd'):.2f} pos={portfolio.get('has_position')}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +312,7 @@ def _init_trade_tracking(
     portfolio["entry_bb_pct"] = technical.get("bb_pct")
     portfolio["entry_rsi"] = technical.get("rsi_14")
     portfolio["entry_atr"] = technical.get("atr_14")
+    portfolio["entry_ret_1d"] = technical.get("ret_1d")
 
     # Z-score snapshot at entry
     portfolio["entry_oi_z"] = zscores.get("oi_z")
@@ -363,6 +380,8 @@ def _build_trade_record(portfolio: dict, exit_price: float, exit_reason: str) ->
         "entry_bb_pct": portfolio.get("entry_bb_pct"),
         "entry_rsi": portfolio.get("entry_rsi"),
         "entry_atr": portfolio.get("entry_atr"),
+        "entry_ret_1d": portfolio.get("entry_ret_1d"),
+        "entry_filter_passed": portfolio.get("entry_filter_passed", True),
         "entry_oi_z": portfolio.get("entry_oi_z"),
         "entry_fg_raw": portfolio.get("entry_fg_raw"),
         "entry_cluster_technical": portfolio.get("entry_cluster_technical"),
@@ -419,6 +438,88 @@ def _save_completed_trade(record: dict) -> None:
             existing_paths = pd.read_parquet(paths_path)
             paths_df = pd.concat([existing_paths, paths_df], ignore_index=True)
         paths_df.to_parquet(paths_path, index=False)
+
+
+# ---------------------------------------------------------------------------
+# Reversal filter (entry confirmation — applied after scoring says ENTER)
+# ---------------------------------------------------------------------------
+
+def check_reversal_filter(technical: dict, params: dict) -> dict:
+    """
+    Verify reversal conditions before executing an entry.
+    Scoring already decided ENTER; this adds technical confirmation:
+    - RSI < rsi_max (oversold)
+    - ret_1d > ret_1d_min (sell-off decelerating, not a falling knife)
+    - Exception: RSI < rsi_extreme_override overrides ret_1d check (extreme capitulation)
+
+    Accumulates ALL failure reasons (not short-circuit).
+
+    Returns dict with {passed, reason, rsi, ret_1d, rsi_max, ret_1d_min}.
+    """
+    rf = params.get("reversal_filter", {})
+
+    if not rf.get("enabled", False):
+        return {
+            "passed": True,
+            "reason": "filter_disabled",
+            "rsi": technical.get("rsi_14"),
+            "ret_1d": technical.get("ret_1d"),
+            "rsi_max": None,
+            "ret_1d_min": None,
+        }
+
+    rsi_max = rf.get("rsi_max", 35)
+    ret_1d_min = rf.get("ret_1d_min", -0.01)
+    rsi_extreme = rf.get("rsi_extreme_override", 25)
+
+    rsi = technical.get("rsi_14")
+    ret_1d = technical.get("ret_1d")
+
+    if rsi is None or ret_1d is None:
+        return {
+            "passed": False,
+            "reason": (
+                f"FILTER_DATA_MISSING (rsi={'N/A' if rsi is None else f'{rsi:.1f}'}, "
+                f"ret_1d={'N/A' if ret_1d is None else f'{ret_1d:.4f}'})"
+            ),
+            "rsi": rsi,
+            "ret_1d": ret_1d,
+            "rsi_max": rsi_max,
+            "ret_1d_min": ret_1d_min,
+        }
+
+    reasons = []
+
+    if rsi >= rsi_max:
+        reasons.append(f"RSI_TOO_HIGH ({rsi:.1f} >= {rsi_max})")
+
+    if ret_1d <= ret_1d_min:
+        if rsi_extreme > 0 and rsi < rsi_extreme:
+            logger.info(
+                f"EXTREME_CAPITULATION: RSI={rsi:.1f} < {rsi_extreme} → "
+                f"overriding ret_1d filter (ret_1d={ret_1d:.4f})"
+            )
+        else:
+            reasons.append(f"FALLING_KNIFE (ret_1d={ret_1d:.4f} <= {ret_1d_min})")
+
+    if reasons:
+        return {
+            "passed": False,
+            "reason": " & ".join(reasons),
+            "rsi": rsi,
+            "ret_1d": ret_1d,
+            "rsi_max": rsi_max,
+            "ret_1d_min": ret_1d_min,
+        }
+
+    return {
+        "passed": True,
+        "reason": "reversal_confirmed",
+        "rsi": rsi,
+        "ret_1d": ret_1d,
+        "rsi_max": rsi_max,
+        "ret_1d_min": ret_1d_min,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -582,13 +683,32 @@ def run_cycle() -> dict:
             # Reload after potential state change
             portfolio = load_portfolio()
 
-        # Entry decision
+        # Entry decision (scoring says ENTER → apply reversal filter)
         if result["signal"] == "ENTER" and not portfolio["has_position"]:
-            atr_14 = technical.get("atr_14")
-            portfolio = execute_entry(current_price, portfolio, atr_14=atr_14)
-            # Stamp scoring context + init MAE/MFE tracking fields
-            _init_trade_tracking(portfolio, result, regime, technical, zscores)
-            atomic_write_json(portfolio, get_path("portfolio_state"))
+            rf_check = check_reversal_filter(technical, params)
+
+            if rf_check["passed"]:
+                atr_14 = technical.get("atr_14")
+                portfolio = execute_entry(current_price, portfolio, atr_14=atr_14)
+                _init_trade_tracking(portfolio, result, regime, technical, zscores)
+                portfolio["entry_ret_1d"] = rf_check["ret_1d"]
+                portfolio["entry_filter_passed"] = True
+                atomic_write_json(portfolio, get_path("portfolio_state"))
+                logger.info(
+                    f"ENTRY CONFIRMED: score={result.get('score', 0):.3f} | "
+                    f"RSI={rf_check['rsi']:.1f} (<{rf_check['rsi_max']}) | "
+                    f"ret_1d={rf_check['ret_1d']:.4f} (>{rf_check['ret_1d_min']})"
+                )
+            else:
+                logger.info(
+                    f"ENTRY FILTERED: score={result.get('score', 0):.3f} | "
+                    f"RSI={rf_check['rsi']} | ret_1d={rf_check['ret_1d']} → "
+                    f"{rf_check['reason']}"
+                )
+                result["signal"] = "FILTERED"
+                result["filter_reason"] = rf_check["reason"]
+                result["filter_rsi"] = rf_check["rsi"]
+                result["filter_ret_1d"] = rf_check["ret_1d"]
 
     # 11. Append score history
     append_score_history(result)
@@ -601,6 +721,11 @@ def run_cycle() -> dict:
     portfolio["last_threshold"] = result.get("threshold")
     portfolio["last_regime"] = regime
     portfolio["updated_at"] = str(cycle_ts)
+    # Reversal filter state — persisted every cycle for dashboard/debug
+    portfolio["last_filter_passed"] = result.get("signal") != "FILTERED"
+    portfolio["last_filter_reason"] = result.get("filter_reason")
+    portfolio["last_filter_rsi"] = technical.get("rsi_14")
+    portfolio["last_filter_ret_1d"] = technical.get("ret_1d")
     atomic_write_json(portfolio, get_path("portfolio_state"))
 
     # 12. Log cycle

@@ -21,8 +21,10 @@ from src.trading.paper_trader import (
     _init_trade_tracking,
     _update_excursions,
     acquire_lock,
+    check_reversal_filter,
     check_stops_only,
     release_lock,
+    run_cycle,
 )
 
 
@@ -731,3 +733,523 @@ class TestIntegrationDynamicStops:
             triggered, reason = check_stops(portfolio["take_profit_price"] + 1, portfolio)
         assert triggered is True
         assert reason == "TAKE_PROFIT"
+
+
+# ---------------------------------------------------------------------------
+# TestCheckReversalFilter — unit tests for check_reversal_filter()
+# ---------------------------------------------------------------------------
+
+def _rf_params(enabled=True, rsi_max=35, ret_1d_min=-0.01, rsi_extreme_override=25):
+    return {
+        "reversal_filter": {
+            "enabled": enabled,
+            "rsi_max": rsi_max,
+            "ret_1d_min": ret_1d_min,
+            "rsi_extreme_override": rsi_extreme_override,
+        }
+    }
+
+
+class TestCheckReversalFilter:
+    def test_filter_disabled(self):
+        r = check_reversal_filter({"rsi_14": 50, "ret_1d": -0.05}, _rf_params(enabled=False))
+        assert r["passed"] is True
+        assert r["reason"] == "filter_disabled"
+
+    def test_filter_passes_all(self):
+        r = check_reversal_filter({"rsi_14": 28.0, "ret_1d": -0.003}, _rf_params())
+        assert r["passed"] is True
+        assert r["reason"] == "reversal_confirmed"
+
+    def test_filter_rsi_too_high(self):
+        r = check_reversal_filter({"rsi_14": 42.0, "ret_1d": -0.003}, _rf_params())
+        assert r["passed"] is False
+        assert "RSI_TOO_HIGH" in r["reason"]
+
+    def test_filter_falling_knife(self):
+        r = check_reversal_filter({"rsi_14": 28.0, "ret_1d": -0.015}, _rf_params())
+        assert r["passed"] is False
+        assert "FALLING_KNIFE" in r["reason"]
+
+    def test_filter_both_fail(self):
+        r = check_reversal_filter({"rsi_14": 42.0, "ret_1d": -0.015}, _rf_params())
+        assert r["passed"] is False
+        assert "RSI_TOO_HIGH" in r["reason"]
+        assert "FALLING_KNIFE" in r["reason"]
+        assert " & " in r["reason"]
+
+    def test_filter_rsi_exactly_35(self):
+        # condition is rsi < rsi_max (strictly), so 35.0 should block
+        r = check_reversal_filter({"rsi_14": 35.0, "ret_1d": -0.003}, _rf_params())
+        assert r["passed"] is False
+        assert "RSI_TOO_HIGH" in r["reason"]
+
+    def test_filter_ret_1d_exactly_minus_1pct(self):
+        # condition is ret_1d > ret_1d_min (strictly), so -0.01 should block
+        r = check_reversal_filter({"rsi_14": 28.0, "ret_1d": -0.01}, _rf_params())
+        assert r["passed"] is False
+        assert "FALLING_KNIFE" in r["reason"]
+
+    def test_filter_rsi_none(self):
+        r = check_reversal_filter({"rsi_14": None, "ret_1d": -0.003}, _rf_params())
+        assert r["passed"] is False
+        assert "FILTER_DATA_MISSING" in r["reason"]
+
+    def test_filter_ret_1d_none(self):
+        r = check_reversal_filter({"rsi_14": 28.0, "ret_1d": None}, _rf_params())
+        assert r["passed"] is False
+        assert "FILTER_DATA_MISSING" in r["reason"]
+
+    def test_filter_edge_case_rsi_34_9(self):
+        r = check_reversal_filter({"rsi_14": 34.9, "ret_1d": -0.003}, _rf_params())
+        assert r["passed"] is True
+
+    def test_filter_edge_case_ret_minus_0_9pct(self):
+        r = check_reversal_filter({"rsi_14": 28.0, "ret_1d": -0.009}, _rf_params())
+        assert r["passed"] is True
+
+    def test_filter_extreme_capitulation_override(self):
+        # RSI=22 < rsi_extreme_override=25 → overrides ret_1d check
+        r = check_reversal_filter({"rsi_14": 22.0, "ret_1d": -0.02}, _rf_params(rsi_extreme_override=25))
+        assert r["passed"] is True
+
+    def test_filter_extreme_override_disabled(self):
+        # rsi_extreme_override=0 → override disabled, ret_1d still blocks
+        r = check_reversal_filter({"rsi_14": 22.0, "ret_1d": -0.02}, _rf_params(rsi_extreme_override=0))
+        assert r["passed"] is False
+        assert "FALLING_KNIFE" in r["reason"]
+
+    def test_filter_rsi_26_no_override(self):
+        # RSI=26 >= rsi_extreme_override=25 → no override
+        r = check_reversal_filter({"rsi_14": 26.0, "ret_1d": -0.02}, _rf_params(rsi_extreme_override=25))
+        assert r["passed"] is False
+        assert "FALLING_KNIFE" in r["reason"]
+
+
+# ---------------------------------------------------------------------------
+# TestRunCycleWithFilter — integration tests for run_cycle() with filter
+# ---------------------------------------------------------------------------
+
+def _base_portfolio():
+    return {
+        "has_position": False,
+        "entry_price": None,
+        "entry_time": None,
+        "quantity": 0.0,
+        "capital_usd": 10000.0,
+        "trailing_high": None,
+        "stop_loss_price": None,
+        "take_profit_price": None,
+        "last_updated": None,
+        "last_signal": "HOLD",
+        "last_score": 0.0,
+        "last_threshold": 3.5,
+        "last_regime": "Sideways",
+        "updated_at": "2026-04-17T00:00:00",
+    }
+
+
+def _enter_result(score=3.5):
+    return {
+        "signal": "ENTER",
+        "score": score,
+        "score_raw": score,
+        "threshold": 2.8,
+        "block_reason": None,
+        "gate_scores": {},
+        "clusters": {},
+        "proximity_adj": 0.0,
+        "regime_multiplier": 1.0,
+    }
+
+
+def _hold_result():
+    return {**_enter_result(), "signal": "HOLD"}
+
+
+def _block_result():
+    return {**_enter_result(), "signal": "BLOCK", "block_reason": "BLOCK_BEAR_REGIME"}
+
+
+def _common_patches(tmp_path, portfolio, result, technical, params=None):
+    """Build context manager patches for run_cycle integration tests."""
+    if params is None:
+        params = {
+            "reversal_filter": {"enabled": True, "rsi_max": 35, "ret_1d_min": -0.01, "rsi_extreme_override": 25},
+            "news": {"lookback_hours": 4},
+            "execution": _base_exec_params(),
+        }
+    return [
+        patch("src.trading.paper_trader.get_current_regime", return_value={"regime": "Sideways"}),
+        patch("src.trading.paper_trader.get_latest_technical", return_value=technical),
+        patch("src.trading.paper_trader.load_latest_zscores", return_value={}),
+        patch("src.trading.paper_trader.compute_stale_days", return_value={}),
+        patch("src.trading.paper_trader.load_news_crypto_score", return_value=0.0),
+        patch("src.trading.paper_trader.get_fed_context", return_value={"fed_score": 0.0, "proximity_adjustment": 0.0, "is_blackout": False}),
+        patch("src.trading.paper_trader.load_score_history", return_value=[]),
+        patch("src.trading.paper_trader.run_scoring_pipeline", return_value=result),
+        patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+        patch("src.trading.paper_trader.get_params", return_value=params),
+        patch("src.trading.paper_trader.append_score_history"),
+        patch("src.trading.paper_trader.log_cycle"),
+        patch("src.trading.paper_trader.get_path", return_value=tmp_path / "portfolio_state.json"),
+        patch("src.trading.execution.get_path", return_value=tmp_path / "portfolio_state.json"),
+        patch("src.trading.execution.get_params", return_value={"execution": _base_exec_params()}),
+        patch("src.trading.paper_trader.atomic_write_json"),
+        patch("builtins.open", side_effect=lambda *a, **k: open(*a, **k) if str(a[0]).endswith(".parquet") else MagicMock()),
+    ]
+
+
+class TestRunCycleWithFilter:
+    def _open_patches(self, tmp_path, portfolio, result, technical, params=None):
+        patches = _common_patches(tmp_path, portfolio, result, technical, params)
+        # Remove builtins open patch that breaks things — just patch the spot_df load
+        return patches[:-1] + [patch("pandas.read_parquet", side_effect=Exception("no parquet"))]
+
+    def test_entry_with_filter_pass(self, tmp_path):
+        portfolio = _base_portfolio()
+        result = _enter_result()
+        tech = {"close": 75000.0, "rsi_14": 28.0, "ret_1d": -0.003, "bb_pct": 0.15, "atr_14": 900.0}
+        patches = [
+            patch("src.trading.paper_trader.get_current_regime", return_value={"regime": "Sideways"}),
+            patch("src.trading.paper_trader.get_latest_technical", return_value=tech),
+            patch("src.trading.paper_trader.load_latest_zscores", return_value={}),
+            patch("src.trading.paper_trader.compute_stale_days", return_value={}),
+            patch("src.trading.paper_trader.load_news_crypto_score", return_value=0.0),
+            patch("src.trading.paper_trader.get_fed_context", return_value={"fed_score": 0.0, "proximity_adjustment": 0.0, "is_blackout": False}),
+            patch("src.trading.paper_trader.load_score_history", return_value=[]),
+            patch("src.trading.paper_trader.run_scoring_pipeline", return_value=result),
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_params", return_value={
+                "reversal_filter": {"enabled": True, "rsi_max": 35, "ret_1d_min": -0.01, "rsi_extreme_override": 25},
+                "news": {"lookback_hours": 4},
+                "execution": _base_exec_params(),
+            }),
+            patch("src.trading.paper_trader.append_score_history"),
+            patch("src.trading.paper_trader.log_cycle"),
+            patch("src.trading.paper_trader.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_params", return_value={"execution": _base_exec_params()}),
+            patch("src.trading.paper_trader.atomic_write_json"),
+            patch("pandas.read_parquet", side_effect=Exception("no parquet")),
+        ]
+        mock_entry = MagicMock(return_value={**portfolio, "has_position": True, "entry_price": 75000.0})
+        patches.append(patch("src.trading.paper_trader.execute_entry", mock_entry))
+
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9], patches[10], patches[11], patches[12], patches[13], patches[14], patches[15], patches[16], patches[17]:
+            r = run_cycle()
+
+        assert r["signal"] == "ENTER"
+        mock_entry.assert_called_once()
+
+    def test_entry_with_filter_blocked_rsi(self, tmp_path):
+        portfolio = _base_portfolio()
+        result = _enter_result()
+        tech = {"close": 75000.0, "rsi_14": 42.0, "ret_1d": -0.003, "bb_pct": 0.15, "atr_14": 900.0}
+        patches = [
+            patch("src.trading.paper_trader.get_current_regime", return_value={"regime": "Sideways"}),
+            patch("src.trading.paper_trader.get_latest_technical", return_value=tech),
+            patch("src.trading.paper_trader.load_latest_zscores", return_value={}),
+            patch("src.trading.paper_trader.compute_stale_days", return_value={}),
+            patch("src.trading.paper_trader.load_news_crypto_score", return_value=0.0),
+            patch("src.trading.paper_trader.get_fed_context", return_value={"fed_score": 0.0, "proximity_adjustment": 0.0, "is_blackout": False}),
+            patch("src.trading.paper_trader.load_score_history", return_value=[]),
+            patch("src.trading.paper_trader.run_scoring_pipeline", return_value=result),
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_params", return_value={
+                "reversal_filter": {"enabled": True, "rsi_max": 35, "ret_1d_min": -0.01, "rsi_extreme_override": 25},
+                "news": {"lookback_hours": 4},
+                "execution": _base_exec_params(),
+            }),
+            patch("src.trading.paper_trader.append_score_history"),
+            patch("src.trading.paper_trader.log_cycle"),
+            patch("src.trading.paper_trader.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_params", return_value={"execution": _base_exec_params()}),
+            patch("src.trading.paper_trader.atomic_write_json"),
+            patch("pandas.read_parquet", side_effect=Exception("no parquet")),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9], patches[10], patches[11], patches[12], patches[13], patches[14], patches[15], patches[16]:
+            r = run_cycle()
+
+        assert r["signal"] == "FILTERED"
+        assert "RSI_TOO_HIGH" in r["filter_reason"]
+        assert portfolio["has_position"] is False
+
+    def test_entry_with_filter_blocked_ret(self, tmp_path):
+        portfolio = _base_portfolio()
+        result = _enter_result()
+        tech = {"close": 75000.0, "rsi_14": 28.0, "ret_1d": -0.015, "bb_pct": 0.15, "atr_14": 900.0}
+        patches = [
+            patch("src.trading.paper_trader.get_current_regime", return_value={"regime": "Sideways"}),
+            patch("src.trading.paper_trader.get_latest_technical", return_value=tech),
+            patch("src.trading.paper_trader.load_latest_zscores", return_value={}),
+            patch("src.trading.paper_trader.compute_stale_days", return_value={}),
+            patch("src.trading.paper_trader.load_news_crypto_score", return_value=0.0),
+            patch("src.trading.paper_trader.get_fed_context", return_value={"fed_score": 0.0, "proximity_adjustment": 0.0, "is_blackout": False}),
+            patch("src.trading.paper_trader.load_score_history", return_value=[]),
+            patch("src.trading.paper_trader.run_scoring_pipeline", return_value=result),
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_params", return_value={
+                "reversal_filter": {"enabled": True, "rsi_max": 35, "ret_1d_min": -0.01, "rsi_extreme_override": 25},
+                "news": {"lookback_hours": 4},
+                "execution": _base_exec_params(),
+            }),
+            patch("src.trading.paper_trader.append_score_history"),
+            patch("src.trading.paper_trader.log_cycle"),
+            patch("src.trading.paper_trader.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_params", return_value={"execution": _base_exec_params()}),
+            patch("src.trading.paper_trader.atomic_write_json"),
+            patch("pandas.read_parquet", side_effect=Exception("no parquet")),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9], patches[10], patches[11], patches[12], patches[13], patches[14], patches[15], patches[16]:
+            r = run_cycle()
+
+        assert r["signal"] == "FILTERED"
+        assert "FALLING_KNIFE" in r["filter_reason"]
+
+    def test_entry_with_filter_disabled(self, tmp_path):
+        portfolio = _base_portfolio()
+        result = _enter_result()
+        tech = {"close": 75000.0, "rsi_14": 50.0, "ret_1d": -0.05, "bb_pct": 0.15, "atr_14": 900.0}
+        mock_entry = MagicMock(return_value={**portfolio, "has_position": True, "entry_price": 75000.0})
+        patches = [
+            patch("src.trading.paper_trader.get_current_regime", return_value={"regime": "Sideways"}),
+            patch("src.trading.paper_trader.get_latest_technical", return_value=tech),
+            patch("src.trading.paper_trader.load_latest_zscores", return_value={}),
+            patch("src.trading.paper_trader.compute_stale_days", return_value={}),
+            patch("src.trading.paper_trader.load_news_crypto_score", return_value=0.0),
+            patch("src.trading.paper_trader.get_fed_context", return_value={"fed_score": 0.0, "proximity_adjustment": 0.0, "is_blackout": False}),
+            patch("src.trading.paper_trader.load_score_history", return_value=[]),
+            patch("src.trading.paper_trader.run_scoring_pipeline", return_value=result),
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_params", return_value={
+                "reversal_filter": {"enabled": False, "rsi_max": 35, "ret_1d_min": -0.01, "rsi_extreme_override": 25},
+                "news": {"lookback_hours": 4},
+                "execution": _base_exec_params(),
+            }),
+            patch("src.trading.paper_trader.append_score_history"),
+            patch("src.trading.paper_trader.log_cycle"),
+            patch("src.trading.paper_trader.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_params", return_value={"execution": _base_exec_params()}),
+            patch("src.trading.paper_trader.atomic_write_json"),
+            patch("pandas.read_parquet", side_effect=Exception("no parquet")),
+            patch("src.trading.paper_trader.execute_entry", mock_entry),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9], patches[10], patches[11], patches[12], patches[13], patches[14], patches[15], patches[16], patches[17]:
+            r = run_cycle()
+
+        assert r["signal"] == "ENTER"
+        mock_entry.assert_called_once()
+
+    def test_hold_signal_unaffected(self, tmp_path):
+        portfolio = _base_portfolio()
+        result = _hold_result()
+        tech = {"close": 75000.0, "rsi_14": 28.0, "ret_1d": -0.003, "bb_pct": 0.15, "atr_14": 900.0}
+        mock_entry = MagicMock()
+        patches = [
+            patch("src.trading.paper_trader.get_current_regime", return_value={"regime": "Sideways"}),
+            patch("src.trading.paper_trader.get_latest_technical", return_value=tech),
+            patch("src.trading.paper_trader.load_latest_zscores", return_value={}),
+            patch("src.trading.paper_trader.compute_stale_days", return_value={}),
+            patch("src.trading.paper_trader.load_news_crypto_score", return_value=0.0),
+            patch("src.trading.paper_trader.get_fed_context", return_value={"fed_score": 0.0, "proximity_adjustment": 0.0, "is_blackout": False}),
+            patch("src.trading.paper_trader.load_score_history", return_value=[]),
+            patch("src.trading.paper_trader.run_scoring_pipeline", return_value=result),
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_params", return_value={
+                "reversal_filter": {"enabled": True, "rsi_max": 35, "ret_1d_min": -0.01, "rsi_extreme_override": 25},
+                "news": {"lookback_hours": 4},
+                "execution": _base_exec_params(),
+            }),
+            patch("src.trading.paper_trader.append_score_history"),
+            patch("src.trading.paper_trader.log_cycle"),
+            patch("src.trading.paper_trader.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_params", return_value={"execution": _base_exec_params()}),
+            patch("src.trading.paper_trader.atomic_write_json"),
+            patch("pandas.read_parquet", side_effect=Exception("no parquet")),
+            patch("src.trading.paper_trader.execute_entry", mock_entry),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9], patches[10], patches[11], patches[12], patches[13], patches[14], patches[15], patches[16], patches[17]:
+            r = run_cycle()
+
+        assert r["signal"] == "HOLD"
+        mock_entry.assert_not_called()
+
+    def test_block_signal_unaffected(self, tmp_path):
+        portfolio = _base_portfolio()
+        result = _block_result()
+        tech = {"close": 75000.0, "rsi_14": 28.0, "ret_1d": -0.003, "bb_pct": 0.15, "atr_14": 900.0}
+        mock_entry = MagicMock()
+        patches = [
+            patch("src.trading.paper_trader.get_current_regime", return_value={"regime": "Bear"}),
+            patch("src.trading.paper_trader.get_latest_technical", return_value=tech),
+            patch("src.trading.paper_trader.load_latest_zscores", return_value={}),
+            patch("src.trading.paper_trader.compute_stale_days", return_value={}),
+            patch("src.trading.paper_trader.load_news_crypto_score", return_value=0.0),
+            patch("src.trading.paper_trader.get_fed_context", return_value={"fed_score": 0.0, "proximity_adjustment": 0.0, "is_blackout": False}),
+            patch("src.trading.paper_trader.load_score_history", return_value=[]),
+            patch("src.trading.paper_trader.run_scoring_pipeline", return_value=result),
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_params", return_value={
+                "reversal_filter": {"enabled": True, "rsi_max": 35, "ret_1d_min": -0.01, "rsi_extreme_override": 25},
+                "news": {"lookback_hours": 4},
+                "execution": _base_exec_params(),
+            }),
+            patch("src.trading.paper_trader.append_score_history"),
+            patch("src.trading.paper_trader.log_cycle"),
+            patch("src.trading.paper_trader.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_path", return_value=tmp_path / "p.json"),
+            patch("src.trading.execution.get_params", return_value={"execution": _base_exec_params()}),
+            patch("src.trading.paper_trader.atomic_write_json"),
+            patch("pandas.read_parquet", side_effect=Exception("no parquet")),
+            patch("src.trading.paper_trader.execute_entry", mock_entry),
+        ]
+        with patches[0], patches[1], patches[2], patches[3], patches[4], patches[5], patches[6], patches[7], patches[8], patches[9], patches[10], patches[11], patches[12], patches[13], patches[14], patches[15], patches[16], patches[17]:
+            r = run_cycle()
+
+        assert r["signal"] == "BLOCK"
+        mock_entry.assert_not_called()
+
+    def test_filter_context_saved(self):
+        portfolio = _base_portfolio()
+        result = _enter_result()
+        tech = {"close": 75000.0, "rsi_14": 28.0, "ret_1d": -0.003, "bb_pct": 0.15, "atr_14": None}
+        entered_portfolio = {**portfolio, "has_position": True, "entry_price": 75000.0, "quantity": 0.133}
+
+        mock_entry = MagicMock(return_value=entered_portfolio)
+        saved_portfolios = []
+        mock_atomic = MagicMock(side_effect=lambda p, path: saved_portfolios.append(dict(p)))
+
+        with (
+            patch("src.trading.paper_trader.get_current_regime", return_value={"regime": "Sideways"}),
+            patch("src.trading.paper_trader.get_latest_technical", return_value=tech),
+            patch("src.trading.paper_trader.load_latest_zscores", return_value={}),
+            patch("src.trading.paper_trader.compute_stale_days", return_value={}),
+            patch("src.trading.paper_trader.load_news_crypto_score", return_value=0.0),
+            patch("src.trading.paper_trader.get_fed_context", return_value={"fed_score": 0.0, "proximity_adjustment": 0.0, "is_blackout": False}),
+            patch("src.trading.paper_trader.load_score_history", return_value=[]),
+            patch("src.trading.paper_trader.run_scoring_pipeline", return_value=result),
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_params", return_value={
+                "reversal_filter": {"enabled": True, "rsi_max": 35, "ret_1d_min": -0.01, "rsi_extreme_override": 25},
+                "news": {"lookback_hours": 4},
+                "execution": _base_exec_params(),
+            }),
+            patch("src.trading.paper_trader.append_score_history"),
+            patch("src.trading.paper_trader.log_cycle"),
+            patch("src.trading.paper_trader.get_path", return_value="/tmp/p.json"),
+            patch("src.trading.execution.get_path", return_value="/tmp/p.json"),
+            patch("src.trading.execution.get_params", return_value={"execution": _base_exec_params()}),
+            patch("src.trading.paper_trader.atomic_write_json", mock_atomic),
+            patch("pandas.read_parquet", side_effect=Exception("no parquet")),
+            patch("src.trading.paper_trader.execute_entry", mock_entry),
+        ):
+            run_cycle()
+
+        assert any(p.get("entry_filter_passed") is True for p in saved_portfolios)
+        assert any(p.get("entry_ret_1d") == pytest.approx(-0.003) for p in saved_portfolios)
+
+    def test_trade_record_has_filter_fields(self):
+        portfolio = {
+            "has_position": True,
+            "entry_price": 75000.0,
+            "entry_time": "2026-04-17T00:00:00+00:00",
+            "quantity": 0.133,
+            "capital_usd": 10000.0,
+            "trade_id": "test-uuid",
+            "max_favorable": 0.01,
+            "max_adverse": -0.005,
+            "mfe_time": None, "mae_time": None,
+            "price_path": [],
+            "entry_score_raw": 3.5, "entry_score_adjusted": 3.5, "entry_regime": "Sideways",
+            "entry_bb_pct": 0.15, "entry_rsi": 28.0, "entry_atr": None,
+            "entry_ret_1d": -0.003,
+            "entry_filter_passed": True,
+            "entry_oi_z": None, "entry_fg_raw": None,
+            "entry_cluster_technical": None, "entry_cluster_positioning": None,
+            "entry_cluster_macro": None, "entry_cluster_liquidity": None,
+            "entry_cluster_sentiment": None, "entry_cluster_news": None,
+            "entry_stop_gain_pct": 0.02, "entry_stop_loss_pct": 0.03,
+            "entry_trailing_stop_pct": 0.015,
+        }
+        rec = _build_trade_record(portfolio, 76000.0, "TAKE_PROFIT")
+        assert "entry_ret_1d" in rec
+        assert rec["entry_ret_1d"] == pytest.approx(-0.003)
+        assert "entry_filter_passed" in rec
+        assert rec["entry_filter_passed"] is True
+
+    def test_filter_state_persisted_on_block(self, tmp_path):
+        portfolio = _base_portfolio()
+        result = _enter_result()
+        tech = {"close": 75000.0, "rsi_14": 42.0, "ret_1d": -0.003, "bb_pct": 0.15, "atr_14": None}
+        saved_portfolios = []
+        mock_atomic = MagicMock(side_effect=lambda p, path: saved_portfolios.append(dict(p)))
+
+        with (
+            patch("src.trading.paper_trader.get_current_regime", return_value={"regime": "Sideways"}),
+            patch("src.trading.paper_trader.get_latest_technical", return_value=tech),
+            patch("src.trading.paper_trader.load_latest_zscores", return_value={}),
+            patch("src.trading.paper_trader.compute_stale_days", return_value={}),
+            patch("src.trading.paper_trader.load_news_crypto_score", return_value=0.0),
+            patch("src.trading.paper_trader.get_fed_context", return_value={"fed_score": 0.0, "proximity_adjustment": 0.0, "is_blackout": False}),
+            patch("src.trading.paper_trader.load_score_history", return_value=[]),
+            patch("src.trading.paper_trader.run_scoring_pipeline", return_value=result),
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_params", return_value={
+                "reversal_filter": {"enabled": True, "rsi_max": 35, "ret_1d_min": -0.01, "rsi_extreme_override": 25},
+                "news": {"lookback_hours": 4},
+                "execution": _base_exec_params(),
+            }),
+            patch("src.trading.paper_trader.append_score_history"),
+            patch("src.trading.paper_trader.log_cycle"),
+            patch("src.trading.paper_trader.get_path", return_value="/tmp/p.json"),
+            patch("src.trading.execution.get_path", return_value="/tmp/p.json"),
+            patch("src.trading.execution.get_params", return_value={"execution": _base_exec_params()}),
+            patch("src.trading.paper_trader.atomic_write_json", mock_atomic),
+            patch("pandas.read_parquet", side_effect=Exception("no parquet")),
+        ):
+            run_cycle()
+
+        last_saved = saved_portfolios[-1]
+        assert last_saved["last_filter_passed"] is False
+        assert "RSI_TOO_HIGH" in (last_saved.get("last_filter_reason") or "")
+
+    def test_filter_state_persisted_on_hold(self, tmp_path):
+        portfolio = _base_portfolio()
+        result = _hold_result()
+        tech = {"close": 75000.0, "rsi_14": 42.0, "ret_1d": -0.003, "bb_pct": 0.15, "atr_14": None}
+        saved_portfolios = []
+        mock_atomic = MagicMock(side_effect=lambda p, path: saved_portfolios.append(dict(p)))
+
+        with (
+            patch("src.trading.paper_trader.get_current_regime", return_value={"regime": "Sideways"}),
+            patch("src.trading.paper_trader.get_latest_technical", return_value=tech),
+            patch("src.trading.paper_trader.load_latest_zscores", return_value={}),
+            patch("src.trading.paper_trader.compute_stale_days", return_value={}),
+            patch("src.trading.paper_trader.load_news_crypto_score", return_value=0.0),
+            patch("src.trading.paper_trader.get_fed_context", return_value={"fed_score": 0.0, "proximity_adjustment": 0.0, "is_blackout": False}),
+            patch("src.trading.paper_trader.load_score_history", return_value=[]),
+            patch("src.trading.paper_trader.run_scoring_pipeline", return_value=result),
+            patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.trading.paper_trader.get_params", return_value={
+                "reversal_filter": {"enabled": True, "rsi_max": 35, "ret_1d_min": -0.01, "rsi_extreme_override": 25},
+                "news": {"lookback_hours": 4},
+                "execution": _base_exec_params(),
+            }),
+            patch("src.trading.paper_trader.append_score_history"),
+            patch("src.trading.paper_trader.log_cycle"),
+            patch("src.trading.paper_trader.get_path", return_value="/tmp/p.json"),
+            patch("src.trading.execution.get_path", return_value="/tmp/p.json"),
+            patch("src.trading.execution.get_params", return_value={"execution": _base_exec_params()}),
+            patch("src.trading.paper_trader.atomic_write_json", mock_atomic),
+            patch("pandas.read_parquet", side_effect=Exception("no parquet")),
+        ):
+            run_cycle()
+
+        last_saved = saved_portfolios[-1]
+        assert last_saved["last_filter_rsi"] == pytest.approx(42.0)
+        assert last_saved["last_filter_ret_1d"] == pytest.approx(-0.003)

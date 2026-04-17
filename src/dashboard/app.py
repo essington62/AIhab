@@ -110,9 +110,10 @@ st.markdown("""
   }
   .header-item { color: #8b949e; }
   .header-value { color: #e6edf3; font-weight: 600; }
-  .signal-enter { color: #3fb950; font-weight: 700; }
-  .signal-hold  { color: #d29922; font-weight: 700; }
-  .signal-block { color: #f85149; font-weight: 700; }
+  .signal-enter  { color: #3fb950; font-weight: 700; }
+  .signal-hold   { color: #d29922; font-weight: 700; }
+  .signal-block  { color: #f85149; font-weight: 700; }
+  .signal-filter { color: #FFA500; font-weight: 700; }
 
   .score-bar-wrap {
     background: #161b22;
@@ -858,7 +859,7 @@ def main():
     # =========================================================================
     # SECTION 1: HEADER
     # =========================================================================
-    sig_class = {"ENTER": "signal-enter", "HOLD": "signal-hold", "BLOCK": "signal-block"}.get(signal, "neut")
+    sig_class = {"ENTER": "signal-enter", "HOLD": "signal-hold", "BLOCK": "signal-block", "FILTERED": "signal-filter"}.get(signal, "neut")
     price_c   = "pos" if pct_24h >= 0 else "neg"
     regime_c  = {"Bull": "pos", "Bear": "neg", "Sideways": "warn"}.get(regime, "neut")
     fed_note  = f"Fed: {fomc['next_event']} em {fomc['days_away']}d" if fomc["next_event"] else "Fed: sem eventos próximos"
@@ -1714,6 +1715,54 @@ def main():
   <div class="cg-card-value">{n_entries}</div>
   <div class="cg-card-sub">total desde início</div>
 </div>""", unsafe_allow_html=True)
+
+    # ── Reversal filter state ──────────────────────────────────────────────
+    _params = get_params()
+    _rf = _params.get("reversal_filter", {})
+    if _rf.get("enabled", False):
+        _f_rsi      = portfolio.get("last_filter_rsi")
+        _f_ret1d    = portfolio.get("last_filter_ret_1d")
+        _f_passed   = portfolio.get("last_filter_passed", True)
+        _f_reason   = portfolio.get("last_filter_reason", "")
+        _rsi_max    = _rf.get("rsi_max", 35)
+        _ret1d_min  = _rf.get("ret_1d_min", -0.01)
+
+        def _rsi_html(rsi_val, rsi_max_v):
+            if rsi_val is None:
+                return "<span style='color:#8b949e;'>RSI: N/A</span>"
+            ok = rsi_val < rsi_max_v
+            sym = "✓" if ok else "✗"
+            col = "#3fb950" if ok else "#f85149"
+            op  = "<" if ok else "≥"
+            return (
+                f"<span style='color:#8b949e;'>RSI: </span>"
+                f"<span style='color:{col};'>{rsi_val:.1f} ({op}{rsi_max_v} {sym})</span>"
+            )
+
+        def _ret1d_html(ret_val, ret_min_v):
+            if ret_val is None:
+                return "<span style='color:#8b949e;'>ret_1d: N/A</span>"
+            ok = ret_val > ret_min_v
+            sym = "✓" if ok else "✗"
+            col = "#3fb950" if ok else "#f85149"
+            op  = ">" if ok else "≤"
+            return (
+                f"<span style='color:#8b949e;'>ret_1d: </span>"
+                f"<span style='color:{col};'>{ret_val*100:.2f}% ({op}{ret_min_v*100:.1f}% {sym})</span>"
+            )
+
+        _filter_status = (
+            "<span style='color:#3fb950;'>✓ PASS</span>" if _f_passed
+            else f"<span style='color:#FFA500;'>✗ FILTERED ({_f_reason})</span>"
+        )
+        st.markdown(
+            f'<div class="cg-card" style="padding:8px 16px; font-size:12px;">'
+            f'<span style="color:#8b949e;">Reversal Filter: </span>{_filter_status}'
+            f' &nbsp;|&nbsp; {_rsi_html(_f_rsi, _rsi_max)}'
+            f' &nbsp;|&nbsp; {_ret1d_html(_f_ret1d, _ret1d_min)}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
     if has_pos and entry_px:
         _stops_mode  = portfolio.get("stops_mode", "fixed")

@@ -121,6 +121,15 @@ def get_latest_technical() -> dict:
 
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.sort_values("timestamp")
+
+    # ret_1d — 24 hourly candles = 1 day
+    if len(df) >= 25:
+        close_now = float(df.iloc[-1]["close"])
+        close_24h_ago = float(df.iloc[-25]["close"])
+        ret_1d = (close_now - close_24h_ago) / close_24h_ago
+    else:
+        ret_1d = None
+
     latest = df.iloc[-1]
 
     def _f(col):
@@ -139,15 +148,18 @@ def get_latest_technical() -> dict:
         "low_7d":     _f("low_7d"),
         "high_30d":   _f("high_30d"),
         "low_30d":    _f("low_30d"),
+        "ret_1d":     round(ret_1d, 6) if ret_1d is not None else None,
     }
     params = get_params()["technical"]
     for w in params["ma_windows"]:
         col = f"ma_{w}"
         result[col] = _f(col)
 
+    _ret1d_str = f"{result['ret_1d']:.4f}" if result.get("ret_1d") is not None else "N/A"
     logger.info(
         f"Latest technical: close={result['close']:.2f}, "
-        f"bb_pct={result['bb_pct']:.3f}, rsi={result['rsi_14']:.1f}"
+        f"bb_pct={result['bb_pct']:.3f}, rsi={result['rsi_14']:.1f}, "
+        f"ret_1d={_ret1d_str}"
     )
     return result
 

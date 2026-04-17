@@ -182,6 +182,15 @@ r5c:
   daily_close_hour_utc: 0   # Binance daily candle closes at 00:00 UTC
 
 # ---------------------------------------------------------------------------
+# Reversal filter (entry confirmation — applied AFTER scoring)
+# ---------------------------------------------------------------------------
+reversal_filter:
+  enabled: true
+  rsi_max: 35               # RSI must be BELOW this (oversold confirmation)
+  ret_1d_min: -0.01         # 1d return must be ABOVE -1% (not a falling knife)
+  rsi_extreme_override: 25  # RSI below this = extreme capitulation → ignores ret_1d_min (0 = disabled)
+
+# ---------------------------------------------------------------------------
 # Data quality
 # ---------------------------------------------------------------------------
 dq:
