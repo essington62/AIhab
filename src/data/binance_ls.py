@@ -144,6 +144,13 @@ def _fetch_ls_batched(
         logger.info(f"{symbol} {source}: default 21 days")
 
     now_ms = int(pd.Timestamp.utcnow().timestamp() * 1000)
+
+    # Binance only retains ~30 days; startTime older than that returns HTTP 400
+    max_history_ms = int((pd.Timestamp.utcnow() - pd.Timedelta(days=28)).timestamp() * 1000)
+    if cur_ms < max_history_ms:
+        logger.warning(f"{symbol} {source}: startTime clamped to 28d (Binance limit)")
+        cur_ms = max_history_ms
+
     all_batches: list[pd.DataFrame] = []
 
     while cur_ms < now_ms:
