@@ -195,6 +195,7 @@ reversal_filter:
     enabled: true
     hours_after_sl: 12               # mínimo 12h após stop loss para reentrar
     require_price_above_exit: true   # preço deve estar acima do preço de saída do SL
+    bounce_pct: 0.003                # buffer de +0.3% acima do preço de saída (reversão real)
     max_consecutive_sl: 3            # após 3 SLs consecutivos, pausa estendida
     consecutive_sl_pause_hours: 24   # pausa de 24h após atingir max_consecutive_sl
 
@@ -214,6 +215,7 @@ momentum_filter:
     enabled: true
     hours_after_sl: 12
     require_price_above_exit: true
+    bounce_pct: 0.003
     max_consecutive_sl: 3
     consecutive_sl_pause_hours: 24
 

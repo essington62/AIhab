@@ -492,6 +492,48 @@ def whale_signal(ls_account: float, price_chg_24h: float) -> tuple[str, str]:
 # Helpers for latest hourly log
 # ---------------------------------------------------------------------------
 
+def compute_bot_metrics(trades_df: pd.DataFrame) -> dict:
+    """Compute trading metrics (WR, PF, DD, etc.) for a set of completed trades."""
+    if trades_df.empty or "return_pct" not in trades_df.columns:
+        return {
+            "n_trades": 0, "wins": 0, "losses": 0,
+            "win_rate": 0.0, "profit_factor": 0.0,
+            "total_return": 0.0, "max_drawdown": 0.0,
+            "avg_win": 0.0, "avg_loss": 0.0, "avg_duration_hours": 0.0,
+        }
+    returns = trades_df["return_pct"].astype(float)
+    n = len(returns)
+    wins    = int((returns > 0).sum())
+    losses  = int((returns <= 0).sum())
+    win_rate = wins / n * 100 if n > 0 else 0.0
+    gross_profit = float(returns[returns > 0].sum())
+    gross_loss   = float(abs(returns[returns <= 0].sum()))
+    if gross_loss > 0:
+        profit_factor = round(gross_profit / gross_loss, 2)
+    elif gross_profit > 0:
+        profit_factor = 99.0
+    else:
+        profit_factor = 0.0
+    total_return = round(float(((1 + returns / 100).prod() - 1) * 100), 2)
+    equity       = (1 + returns / 100).cumprod()
+    rolling_max  = equity.cummax()
+    max_drawdown = round(float(((equity / rolling_max) - 1).min() * 100), 2)
+    avg_win  = round(float(returns[returns > 0].mean()), 2) if wins > 0 else 0.0
+    avg_loss = round(float(returns[returns <= 0].mean()), 2) if losses > 0 else 0.0
+    avg_dur  = 0.0
+    if "duration_hours" in trades_df.columns:
+        avg_dur = round(float(trades_df["duration_hours"].mean()), 1)
+    return {
+        "n_trades": n, "wins": wins, "losses": losses,
+        "win_rate": round(win_rate, 1),
+        "profit_factor": profit_factor,
+        "total_return": total_return,
+        "max_drawdown": max_drawdown,
+        "avg_win": avg_win, "avg_loss": avg_loss,
+        "avg_duration_hours": avg_dur,
+    }
+
+
 def get_last_cycle_info() -> dict:
     log_dir = ROOT / "logs"
     if not log_dir.exists():
@@ -1794,9 +1836,11 @@ def main():
             _max_consec  = _cd_cfg.get("max_consecutive_sl", 3)
             if _consec_sl >= _max_consec:
                 _cd_hours = _cd_cfg.get("consecutive_sl_pause_hours", 24)
-            _sl_price  = portfolio.get("last_sl_price", 0) or 0
-            _price_ok  = price > _sl_price if _sl_price else True
-            _time_ok   = _hours_since >= _cd_hours
+            _sl_price       = portfolio.get("last_sl_price", 0) or 0
+            _bounce_pct     = _cd_cfg.get("bounce_pct", 0.003)
+            _bounce_target  = _sl_price * (1 + _bounce_pct) if _sl_price else 0
+            _price_ok       = price > _bounce_target if _sl_price else True
+            _time_ok        = _hours_since >= _cd_hours
             if not _time_ok or not _price_ok:
                 _remaining = max(0.0, _cd_hours - _hours_since)
                 _consec_warn = (
@@ -1807,7 +1851,8 @@ def main():
                     f'<div class="cg-card" style="padding:8px 16px; font-size:12px; border-left:3px solid #f85149;">'
                     f'<span style="color:#f85149;">⏸️ COOLDOWN ATIVO (Bot 1)</span>'
                     f' &nbsp;|&nbsp; <span style="color:#8b949e;">Último SL:</span> {_hours_since:.1f}h atrás (min {_cd_hours}h)'
-                    f' &nbsp;|&nbsp; <span style="color:#8b949e;">Preço saída:</span> ${_sl_price:,.0f}'
+                    f' &nbsp;|&nbsp; <span style="color:#8b949e;">Reentry min:</span> ${_bounce_target:,.0f}'
+                    f' <span style="color:#8b949e;">(exit ${_sl_price:,.0f} + {_bounce_pct*100:.1f}%)</span>'
                     f' <span class="{"pos" if _price_ok else "neg"}">{"(✓ acima)" if _price_ok else "(✗ abaixo)"}</span>'
                     f' &nbsp;|&nbsp; <span style="color:#8b949e;">SLs consecutivos:</span> {_consec_sl}'
                     f' &nbsp;|&nbsp; <span style="color:#8b949e;">Restante:</span> {_remaining:.1f}h'
@@ -1887,6 +1932,29 @@ def main():
 </div>""", unsafe_allow_html=True)
     else:
         st.info("Nenhum trade Bot 1 completado ainda.")
+
+    # ── Bot 1 Metrics ──────────────────────────────────────────────────────
+    if not _bot1_trades.empty:
+        m1 = compute_bot_metrics(_bot1_trades)
+        if m1["n_trades"] < 3:
+            st.caption("⚠️ Métricas preliminares — mínimo recomendado: 20 trades para avaliação confiável.")
+        _m1c = st.columns(6)
+        with _m1c[0]:
+            st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">TRADES</div><div style="font-size:18px;font-weight:700;">{m1["n_trades"]}</div><div class="cg-card-sub">{m1["wins"]}W / {m1["losses"]}L</div></div>', unsafe_allow_html=True)
+        with _m1c[1]:
+            _wr1c = "pos" if m1["win_rate"] >= 50 else "neg"
+            st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">WIN RATE</div><div class="cg-card-value {_wr1c}">{m1["win_rate"]:.0f}%</div></div>', unsafe_allow_html=True)
+        with _m1c[2]:
+            _pf1c = "pos" if m1["profit_factor"] >= 1.0 else "neg"
+            _pf1v = "∞" if m1["profit_factor"] >= 99 else f'{m1["profit_factor"]:.2f}'
+            st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">PROFIT FACTOR</div><div class="cg-card-value {_pf1c}">{_pf1v}</div></div>', unsafe_allow_html=True)
+        with _m1c[3]:
+            _tr1c = "pos" if m1["total_return"] >= 0 else "neg"
+            st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">RETORNO</div><div class="cg-card-value {_tr1c}">{m1["total_return"]:+.2f}%</div></div>', unsafe_allow_html=True)
+        with _m1c[4]:
+            st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">MAX DD</div><div class="cg-card-value neg">{m1["max_drawdown"]:.2f}%</div></div>', unsafe_allow_html=True)
+        with _m1c[5]:
+            st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">AVG DURAÇÃO</div><div style="font-size:18px;font-weight:700;">{m1["avg_duration_hours"]:.0f}h</div></div>', unsafe_allow_html=True)
 
     # ── Equity curve ───────────────────────────────────────────────────────
     if not cycle_log_df.empty and "capital_usd" in cycle_log_df.columns and len(cycle_log_df) > 2:
@@ -2087,9 +2155,11 @@ def main():
                 _max_consec2 = _cd_cfg2.get("max_consecutive_sl", 3)
                 if _consec_sl >= _max_consec2:
                     _cd_hours2 = _cd_cfg2.get("consecutive_sl_pause_hours", 24)
-                _sl_price2 = portfolio.get("last_sl_price", 0) or 0
-                _price_ok2 = price > _sl_price2 if _sl_price2 else True
-                _time_ok2  = _hours_since2 >= _cd_hours2
+                _sl_price2      = portfolio.get("last_sl_price", 0) or 0
+                _bounce_pct2    = _cd_cfg2.get("bounce_pct", 0.003)
+                _bounce_target2 = _sl_price2 * (1 + _bounce_pct2) if _sl_price2 else 0
+                _price_ok2      = price > _bounce_target2 if _sl_price2 else True
+                _time_ok2       = _hours_since2 >= _cd_hours2
                 if not _time_ok2 or not _price_ok2:
                     _remaining2 = max(0.0, _cd_hours2 - _hours_since2)
                     _consec_warn2 = (
@@ -2100,7 +2170,8 @@ def main():
                         f'<div class="cg-card" style="padding:8px 16px; font-size:12px; border-left:3px solid #f85149;">'
                         f'<span style="color:#f85149;">⏸️ COOLDOWN ATIVO (Bot 2)</span>'
                         f' &nbsp;|&nbsp; <span style="color:#8b949e;">Último SL:</span> {_hours_since2:.1f}h atrás (min {_cd_hours2}h)'
-                        f' &nbsp;|&nbsp; <span style="color:#8b949e;">Preço saída:</span> ${_sl_price2:,.0f}'
+                        f' &nbsp;|&nbsp; <span style="color:#8b949e;">Reentry min:</span> ${_bounce_target2:,.0f}'
+                        f' <span style="color:#8b949e;">(exit ${_sl_price2:,.0f} + {_bounce_pct2*100:.1f}%)</span>'
                         f' <span class="{"pos" if _price_ok2 else "neg"}">{"(✓ acima)" if _price_ok2 else "(✗ abaixo)"}</span>'
                         f' &nbsp;|&nbsp; <span style="color:#8b949e;">SLs consecutivos:</span> {_consec_sl}'
                         f' &nbsp;|&nbsp; <span style="color:#8b949e;">Restante:</span> {_remaining2:.1f}h'
@@ -2174,6 +2245,29 @@ def main():
 </div>""", unsafe_allow_html=True)
         else:
             st.info("Nenhum trade Bot 2 completado ainda.")
+
+        # ── Bot 2 Metrics ──────────────────────────────────────────────────
+        if not _bot2_trades.empty:
+            m2 = compute_bot_metrics(_bot2_trades)
+            if m2["n_trades"] < 3:
+                st.caption("⚠️ Métricas preliminares — mínimo recomendado: 20 trades para avaliação confiável.")
+            _m2c = st.columns(6)
+            with _m2c[0]:
+                st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">TRADES</div><div style="font-size:18px;font-weight:700;">{m2["n_trades"]}</div><div class="cg-card-sub">{m2["wins"]}W / {m2["losses"]}L</div></div>', unsafe_allow_html=True)
+            with _m2c[1]:
+                _wr2c = "pos" if m2["win_rate"] >= 50 else "neg"
+                st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">WIN RATE</div><div class="cg-card-value {_wr2c}">{m2["win_rate"]:.0f}%</div></div>', unsafe_allow_html=True)
+            with _m2c[2]:
+                _pf2c = "pos" if m2["profit_factor"] >= 1.0 else "neg"
+                _pf2v = "∞" if m2["profit_factor"] >= 99 else f'{m2["profit_factor"]:.2f}'
+                st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">PROFIT FACTOR</div><div class="cg-card-value {_pf2c}">{_pf2v}</div></div>', unsafe_allow_html=True)
+            with _m2c[3]:
+                _tr2c = "pos" if m2["total_return"] >= 0 else "neg"
+                st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">RETORNO</div><div class="cg-card-value {_tr2c}">{m2["total_return"]:+.2f}%</div></div>', unsafe_allow_html=True)
+            with _m2c[4]:
+                st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">MAX DD</div><div class="cg-card-value neg">{m2["max_drawdown"]:.2f}%</div></div>', unsafe_allow_html=True)
+            with _m2c[5]:
+                st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">AVG DURAÇÃO</div><div style="font-size:18px;font-weight:700;">{m2["avg_duration_hours"]:.0f}h</div></div>', unsafe_allow_html=True)
 
     st.caption(f"btc-trading-v1 | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | Auto-refresh: {'ON' if auto_refresh else 'OFF'}")
 

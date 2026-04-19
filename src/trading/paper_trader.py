@@ -514,16 +514,20 @@ def check_cooldown(portfolio: dict, current_price: float, bot: str, params: dict
         }
 
     require_above = cd_cfg.get("require_price_above_exit", True)
-    if require_above and last_sl_price and current_price <= last_sl_price:
-        return {
-            "can_enter": False,
-            "reason": (
-                f"PRICE_BELOW_EXIT (current={current_price:.0f} <= sl_exit={last_sl_price:.0f})"
-            ),
-            "hours_remaining": 0,
-            "consecutive_sl": consecutive_sl,
-            "price_above_exit": False,
-        }
+    if require_above and last_sl_price:
+        bounce_pct = cd_cfg.get("bounce_pct", 0.003)
+        min_reentry_price = last_sl_price * (1 + bounce_pct)
+        if current_price <= min_reentry_price:
+            return {
+                "can_enter": False,
+                "reason": (
+                    f"PRICE_BELOW_BOUNCE (current={current_price:.0f} <= "
+                    f"min={min_reentry_price:.0f} [{last_sl_price:.0f} × {1 + bounce_pct:.3f}])"
+                ),
+                "hours_remaining": 0,
+                "consecutive_sl": consecutive_sl,
+                "price_above_exit": False,
+            }
 
     return {
         "can_enter": True,
