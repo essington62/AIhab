@@ -130,6 +130,23 @@ def append_and_save(
 
 
 # ---------------------------------------------------------------------------
+# Timestamp dedup — keep latest on collision
+# ---------------------------------------------------------------------------
+def dedup_by_timestamp(df: pd.DataFrame, ts_col: str = "timestamp") -> pd.DataFrame:
+    """
+    Remove duplicate timestamps, keeping the LAST row (by current sort order).
+    Sort ascending first so that after concat(old, new) the new data wins.
+    """
+    if df.empty or ts_col not in df.columns:
+        return df
+    return (
+        df.sort_values(ts_col)
+        .drop_duplicates(subset=[ts_col], keep="last")
+        .reset_index(drop=True)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Fix 6: News dedup hash
 # ---------------------------------------------------------------------------
 def news_hash(title: str, source: str) -> str:
