@@ -299,7 +299,7 @@ def compute_clusters(zs: dict, bb_pct: float, rsi_14: float, portfolio: dict) ->
     # G5 stable, G7 ETF, G6 bubble, G8 F&G
     g5  = _tanh_score(g("stablecoin_z"), *gp.get("g5_stable",   [ 0.326, 0.6, 1.5]))
     g7  = _tanh_score(g("etf_z"),        *gp.get("g7_etf",       [ 0.263, 0.6, 1.5]))
-    g6  = _tanh_score(g("bubble_z"),     *gp.get("g6_bubble",    [-0.345, 0.7, 1.0]))
+    g6  = _tanh_score(g("bubble_z"),     *gp.get("g6_bubble",    [-0.345, 0.7, 0.0]))
     g8  = _tanh_score(g("fg_z"),         *gp.get("g8_fg",        [-0.211, 0.7, 0.8]))
 
     # G2 news
@@ -1642,10 +1642,7 @@ def main():
             fig.update_layout(**PLOTLY, height=220, title="Score History (últimas 168 leituras)")
             st.plotly_chart(fig, use_container_width=True)
 
-    # ── Calibration Alerts ─────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown("**📐 Calibration Alerts (rolling 30d corr vs parameters.yml)**")
-
+    # ── Calibration data (shared by Model Health + Calibration Alerts) ────────
     _GATE_CORR_MAP = {
         "oi_z":         ("g4_oi",       "G4 OI"),
         "taker_z":      ("g9_taker",    "G9 Taker"),
@@ -1657,10 +1654,11 @@ def main():
         "etf_z":        ("g7_etf",      "G7 ETF"),
         "fg_z":         ("g8_fg",       "G8 F&G"),
     }
+    calib_rows: list = []
+    _calib_error: str = ""
     try:
         _params = load_params()
         _gp = _params.get("gate_params", {})
-        # Build daily z-score + return series
         _zs_cal = zs_df.copy()
         if "timestamp" not in _zs_cal.columns:
             _zs_cal = _zs_cal.reset_index()
@@ -1670,11 +1668,10 @@ def main():
         if not _spot_cal.empty:
             _spot_cal["timestamp"] = pd.to_datetime(_spot_cal["timestamp"], utc=True)
             _spot_ret = _spot_cal.set_index("timestamp").resample("1D")["close"].last().pct_change(3) * 100
-            _spot_ret = _spot_ret.shift(-1)  # forward return
+            _spot_ret = _spot_ret.shift(-1)
         else:
             _spot_ret = pd.Series(dtype=float)
 
-        calib_rows = []
         for zcol, (gkey, gname) in _GATE_CORR_MAP.items():
             if zcol not in _zs_cal.columns or _spot_ret.empty:
                 continue
@@ -1687,24 +1684,106 @@ def main():
             if corr_cfg is None:
                 continue
             diff = abs(corr_now - corr_cfg)
+            _gcfg = _gp.get(gkey, [])
+            weight = float(_gcfg[2]) if len(_gcfg) >= 3 else 1.0
             calib_rows.append({
                 "gate": gname, "corr_cfg": corr_cfg, "corr_30d": corr_now,
-                "diff": diff, "n": len(_m30)
+                "diff": diff, "weight": weight, "n": len(_m30),
             })
-
-        if calib_rows:
-            for r in sorted(calib_rows, key=lambda x: -x["diff"]):
-                icon = "🔴" if r["diff"] > 0.25 else ("⚠️" if r["diff"] > 0.15 else "✅")
-                color = "color:#f85149;" if r["diff"] > 0.25 else ("color:#d29922;" if r["diff"] > 0.15 else "")
-                st.markdown(
-                    f'<span style="{color}">{icon} {r["gate"]}: corr_cfg={r["corr_cfg"]:+.3f} '
-                    f'corr_30d={r["corr_30d"]:+.3f} Δ={r["diff"]:.3f} (n={r["n"]})</span>',
-                    unsafe_allow_html=True,
-                )
-        else:
-            st.caption("Dados insuficientes para calibração (< 10 dias)")
     except Exception as _e:
-        st.caption(f"Calibration error: {_e}")
+        _calib_error = str(_e)
+
+    # ── Model Health Indicator ─────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📐 Model Health")
+    st.caption("Alinhamento agregado entre correlações configuradas e reais (rolling 30d)")
+
+    if _calib_error:
+        st.caption(f"Model Health error: {_calib_error}")
+    elif not calib_rows:
+        st.caption("Model Health: dados insuficientes (< 10 dias de z-scores diários)")
+    else:
+        _mh_cfg     = _params.get("model_health", {})
+        _th_healthy = _mh_cfg.get("threshold_healthy", 0.15)
+        _th_warning = _mh_cfg.get("threshold_warning", 0.30)
+
+        _total_w   = sum(r["weight"] for r in calib_rows)
+        _model_aln = sum(r["diff"] * r["weight"] for r in calib_rows) / _total_w
+        _simple_mn = sum(r["diff"] for r in calib_rows) / len(calib_rows)
+
+        if _model_aln < _th_healthy:
+            _h_status = "🟢 Saudável"
+            _h_color  = "#3fb950"
+            _h_interp = "Modelo bem alinhado com o mercado. Gates operando dentro do esperado."
+        elif _model_aln < _th_warning:
+            _h_status = "🟡 Atenção"
+            _h_color  = "#d29922"
+            _h_interp = "Alguns gates começando a divergir. Monitorar por 2–4 semanas antes de recalibrar."
+        else:
+            _h_status = "🔴 Desalinhado"
+            _h_color  = "#f85149"
+            _h_interp = "Modelo significativamente desalinhado. Considerar recalibração se persistir por 60+ dias."
+
+        _g_healthy = sum(1 for r in calib_rows if r["diff"] < _th_healthy)
+        _g_warning = sum(1 for r in calib_rows if _th_healthy <= r["diff"] < _th_warning)
+        _g_broken  = sum(1 for r in calib_rows if r["diff"] >= _th_warning)
+        _sorted    = sorted(calib_rows, key=lambda x: x["diff"])
+        _best      = _sorted[0]
+        _worst     = _sorted[-1]
+
+        _mh_c1, _mh_c2, _mh_c3 = st.columns([1.2, 1, 1])
+        with _mh_c1:
+            st.markdown(f"""
+<div class="cg-card" style="border-left:4px solid {_h_color};">
+  <div class="cg-card-title">MODEL ALIGNMENT</div>
+  <div class="cg-card-value" style="color:{_h_color};">{_model_aln:.3f}</div>
+  <div class="cg-card-sub">Média ponderada pelo peso dos gates</div>
+  <div style="margin-top:6px; font-weight:700;">{_h_status}</div>
+</div>""", unsafe_allow_html=True)
+        with _mh_c2:
+            st.markdown(f"""
+<div class="cg-card">
+  <div class="cg-card-title">DISTRIBUIÇÃO</div>
+  <div style="font-size:14px; margin-top:6px;">
+    <div><span style="color:#3fb950;">🟢 Saudável:</span> <b>{_g_healthy}</b></div>
+    <div><span style="color:#d29922;">⚠️ Atenção:</span> <b>{_g_warning}</b></div>
+    <div><span style="color:#f85149;">🔴 Desalinhado:</span> <b>{_g_broken}</b></div>
+  </div>
+  <div class="cg-card-sub" style="margin-top:6px;">Total: {len(calib_rows)} gates</div>
+</div>""", unsafe_allow_html=True)
+        with _mh_c3:
+            st.markdown(f"""
+<div class="cg-card">
+  <div class="cg-card-title">EXTREMOS</div>
+  <div style="font-size:13px; margin-top:6px;">
+    <div><span style="color:#3fb950;">✅ Melhor:</span> <b>{_best["gate"]}</b> <span style="color:#8b949e;">(Δ={_best["diff"]:.3f})</span></div>
+    <div style="margin-top:4px;"><span style="color:#f85149;">🔴 Pior:</span> <b>{_worst["gate"]}</b> <span style="color:#8b949e;">(Δ={_worst["diff"]:.3f})</span></div>
+  </div>
+  <div class="cg-card-sub" style="margin-top:6px;">Média simples: {_simple_mn:.3f}</div>
+</div>""", unsafe_allow_html=True)
+
+        st.markdown(f"""
+<div class="cg-card" style="margin-top:8px; padding:10px 16px; font-size:13px;">
+  <span style="color:#8b949e;">Leitura: </span>{_h_interp}
+</div>""", unsafe_allow_html=True)
+
+    # ── Calibration Alerts ─────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("**📐 Calibration Alerts (rolling 30d corr vs parameters.yml)**")
+
+    if _calib_error:
+        st.caption(f"Calibration error: {_calib_error}")
+    elif not calib_rows:
+        st.caption("Dados insuficientes para calibração (< 10 dias)")
+    else:
+        for r in sorted(calib_rows, key=lambda x: -x["diff"]):
+            icon  = "🔴" if r["diff"] > 0.25 else ("⚠️" if r["diff"] > 0.15 else "✅")
+            color = "color:#f85149;" if r["diff"] > 0.25 else ("color:#d29922;" if r["diff"] > 0.15 else "")
+            st.markdown(
+                f'<span style="{color}">{icon} {r["gate"]}: corr_cfg={r["corr_cfg"]:+.3f} '
+                f'corr_30d={r["corr_30d"]:+.3f} Δ={r["diff"]:.3f} (n={r["n"]})</span>',
+                unsafe_allow_html=True,
+            )
 
     # =========================================================================
     # SECTION 8: PAPER TRADING

@@ -238,3 +238,10 @@ momentum_filter:
 dq:
   max_gap_hours_1h: 3       # alert if gap > 3h in 1h series
   min_rows_for_scoring: 14  # min rows in z-score window before using
+
+# ---------------------------------------------------------------------------
+# Model Health Indicator (dashboard visualisation only — no trading logic)
+# ---------------------------------------------------------------------------
+model_health:
+  threshold_healthy: 0.15   # weighted avg delta < 0.15 → Saudável
+  threshold_warning: 0.30   # weighted avg delta < 0.30 → Atenção (else → Desalinhado)
