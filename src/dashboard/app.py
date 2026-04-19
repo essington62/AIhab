@@ -797,7 +797,7 @@ def main():
     signal     = portfolio.get("last_signal", "—")
     score      = portfolio.get("last_score") or 0.0
     threshold  = portfolio.get("last_threshold") or 3.5
-    capital    = portfolio.get("capital_usd", 10000.0)
+    capital    = portfolio.get("total_capital_usd", portfolio.get("capital_usd", 10000.0))
 
     # 24h price change
     if len(spot_df) > 24:
@@ -1944,14 +1944,28 @@ def main():
     unrealized_pct = ((price / entry_px) - 1) * 100 if (has_pos and entry_px) else None
     unrealized_usd = (price - entry_px) * qty if (has_pos and entry_px) else None
 
+    # Capital Manager: per-bucket capital when enabled
+    _cm_params  = _params.get("capital_management", {})
+    _cm_enabled = _cm_params.get("enabled", False)
+    _buckets    = portfolio.get("buckets", {})
+    _b1_bucket  = _buckets.get("btc_bot1", {})
+    _b2_bucket  = _buckets.get("btc_bot2", {})
+    _b1_cap     = _b1_bucket.get("current_capital", capital / 2) if _cm_enabled else capital
+    _b2_cap     = _b2_bucket.get("current_capital", capital / 2) if _cm_enabled else capital
+    _b1_init    = _b1_bucket.get("initial_capital", 5000.0) if _cm_enabled else 10000.0
+    _b2_init    = _b2_bucket.get("initial_capital", 5000.0) if _cm_enabled else 10000.0
+
     pt_c1, pt_c2, pt_c3, pt_c4 = st.columns(4)
     _pos_color = "pos" if (unrealized_pct or 0) >= 0 else "neg"
     with pt_c1:
+        _b1_cap_lbl = "Capital Bot 1" if _cm_enabled else "Capital"
+        _b1_cap_disp = _b1_cap
+        _b1_cap_ref  = _b1_init
         st.markdown(f"""
 <div class="cg-card" style="text-align:center;">
-  <div class="cg-card-title">Capital</div>
-  <div class="cg-card-value">${capital:,.2f}</div>
-  <div class="cg-card-sub {'pos' if capital >= 10000 else 'neg'}">{(capital/10000-1)*100:+.2f}% vs início</div>
+  <div class="cg-card-title">{_b1_cap_lbl}</div>
+  <div class="cg-card-value">${_b1_cap_disp:,.2f}</div>
+  <div class="cg-card-sub {'pos' if _b1_cap_disp >= _b1_cap_ref else 'neg'}">{(_b1_cap_disp/_b1_cap_ref-1)*100:+.2f}% vs início</div>
 </div>""", unsafe_allow_html=True)
     with pt_c2:
         _b1_entry_bot = portfolio.get("entry_bot", "bot1")
@@ -2252,11 +2266,14 @@ def main():
         # ── Cards ─────────────────────────────────────────────────────────
         b2c1, b2c2, b2c3, b2c4 = st.columns(4)
         with b2c1:
+            _b2_cap_lbl = "Capital Bot 2" if _cm_enabled else "Capital"
+            _b2_cap_disp = _b2_cap
+            _b2_cap_ref  = _b2_init
             st.markdown(f"""
 <div class="cg-card" style="text-align:center;">
-  <div class="cg-card-title">Capital</div>
-  <div class="cg-card-value">${capital:,.2f}</div>
-  <div class="cg-card-sub {'pos' if capital >= 10000 else 'neg'}">{(capital/10000-1)*100:+.2f}% vs início</div>
+  <div class="cg-card-title">{_b2_cap_lbl}</div>
+  <div class="cg-card-value">${_b2_cap_disp:,.2f}</div>
+  <div class="cg-card-sub {'pos' if _b2_cap_disp >= _b2_cap_ref else 'neg'}">{(_b2_cap_disp/_b2_cap_ref-1)*100:+.2f}% vs início</div>
 </div>""", unsafe_allow_html=True)
         with b2c2:
             if _b2_has_pos:
@@ -2488,6 +2505,72 @@ def main():
                 st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">MAX DD</div><div class="cg-card-value neg">{m2["max_drawdown"]:.2f}%</div></div>', unsafe_allow_html=True)
             with _m2c[5]:
                 st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">AVG DURAÇÃO</div><div style="font-size:18px;font-weight:700;">{m2["avg_duration_hours"]:.0f}h</div></div>', unsafe_allow_html=True)
+
+    # =========================================================================
+    # SECTION 9: SAFETY STATUS (Capital Manager — shown only when enabled)
+    # =========================================================================
+    if _cm_enabled and _buckets:
+        st.markdown("---")
+        st.markdown("### 🛡️ Safety Status — Capital Manager")
+
+        _safe_cfg = _cm_params.get("safety", {})
+        _max_dd   = _safe_cfg.get("max_drawdown_pct", 0.15)
+        _max_dl   = _safe_cfg.get("max_daily_loss_pct", 0.05)
+
+        _safe_cols = st.columns(len(_buckets))
+        for _i, (_bkey, _bkt) in enumerate(_buckets.items()):
+            with _safe_cols[_i]:
+                _b_init    = _bkt.get("initial_capital", 1.0)
+                _b_cur     = _bkt.get("current_capital", _b_init)
+                _b_peak    = _bkt.get("peak_capital", _b_init)
+                _b_dd      = (_b_init - _b_cur) / _b_init if _b_init > 0 else 0.0
+                _b_dpnl    = _bkt.get("daily_pnl", 0.0)
+                _b_dbase   = _bkt.get("daily_capital_base", _b_init) or _b_init
+                _b_dloss   = -_b_dpnl / _b_dbase if _b_dpnl < 0 and _b_dbase > 0 else 0.0
+                _b_paused  = _bkt.get("paused_until")
+                _b_reason  = _bkt.get("pause_reason", "")
+
+                _dd_color   = "#f85149" if _b_dd >= _max_dd else ("#d29922" if _b_dd > _max_dd * 0.7 else "#3fb950")
+                _dl_color   = "#f85149" if _b_dloss >= _max_dl else ("#d29922" if _b_dloss > _max_dl * 0.7 else "#3fb950")
+                _pause_html = ""
+                if _b_paused:
+                    try:
+                        _pt = pd.Timestamp(_b_paused)
+                        if _pt.tzinfo is None:
+                            _pt = _pt.tz_localize("UTC")
+                        _rem_h = max(0.0, (_pt - pd.Timestamp.now("UTC")).total_seconds() / 3600)
+                        _pause_html = (
+                            f'<div style="color:#f85149;font-size:11px;margin-top:4px;">'
+                            f'⏸️ PAUSADO {_rem_h:.0f}h ({_b_reason})</div>'
+                        )
+                    except Exception:
+                        _pause_html = f'<div style="color:#f85149;font-size:11px;margin-top:4px;">⏸️ PAUSADO</div>'
+
+                st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">{_bkt.get("name", _bkey)}</div>
+  <div class="cg-card-value">${_b_cur:,.2f}</div>
+  <div style="font-size:11px;margin-top:4px;">
+    <span style="color:#8b949e;">DD: </span>
+    <span style="color:{_dd_color};">{_b_dd:.1%}</span>
+    <span style="color:#8b949e;"> / {_max_dd:.0%} max</span>
+    &nbsp;|&nbsp;
+    <span style="color:#8b949e;">Dia: </span>
+    <span style="color:{_dl_color};">{_b_dpnl:+.0f} ({_b_dloss:.1%})</span>
+  </div>
+  {_pause_html}
+</div>""", unsafe_allow_html=True)
+
+        st.markdown(
+            f'<div class="cg-card" style="padding:8px 16px; font-size:12px; margin-top:4px;">'
+            f'<span style="color:#8b949e;">Capital Total: </span>'
+            f'<span style="color:#e6edf3;">${portfolio.get("total_capital_usd", capital):,.2f}</span>'
+            f' &nbsp;|&nbsp; '
+            f'<span style="color:#8b949e;">Safety: </span>'
+            f'<span style="color:#8b949e;">DD max {_max_dd:.0%} / Perda diária max {_max_dl:.0%} por bucket</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
     st.caption(f"btc-trading-v1 | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | Auto-refresh: {'ON' if auto_refresh else 'OFF'}")
 

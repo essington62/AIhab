@@ -281,3 +281,24 @@ adaptive_weights:
 
   # Fallback se não houver dados suficientes
   min_days_for_confidence: 20
+
+# ---------------------------------------------------------------------------
+# Capital Management — multi-bucket portfolio (Opção A)
+# enabled: false = backward compat (single pool); true = buckets ativos
+# ---------------------------------------------------------------------------
+capital_management:
+  enabled: false          # ativar após migrar portfolio_state.json
+
+  buckets:
+    btc_bot1:
+      name: "Bot 1 (Reversal)"
+      allocation_pct: 0.5      # 50% do capital total
+    btc_bot2:
+      name: "Bot 2 (Momentum)"
+      allocation_pct: 0.5      # 50% do capital total
+
+  safety:
+    max_drawdown_pct: 0.15          # pausa se DD do bucket >= 15%
+    max_daily_loss_pct: 0.05        # pausa se perda diária >= 5%
+    pause_hours_after_dd: 72        # 3 dias
+    pause_hours_after_daily_loss: 24 # 1 dia

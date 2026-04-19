@@ -31,6 +31,16 @@ from src.features.gate_features import compute_all_zscores
 from src.features.technical import get_latest_technical
 from src.models.gate_scoring import run_scoring_pipeline
 from src.models.r5c_hmm import get_current_regime
+from src.trading.capital_manager import (
+    bot_to_bucket_key,
+    check_and_pause_if_needed,
+    cm_can_enter,
+    init_buckets,
+    reset_daily_counters_if_needed,
+    sync_capital_for_entry,
+    sync_entry_to_bucket,
+    sync_exit_to_bucket,
+)
 from src.trading.execution import (
     atomic_write_json,
     check_stops,
@@ -906,6 +916,13 @@ def run_cycle() -> dict:
 
     # 9. Portfolio
     portfolio = load_portfolio()
+    # 9b. Capital manager: init buckets (idempotent) + reset daily counters
+    cm_params = params.get("capital_management", {})
+    if cm_params.get("enabled", False):
+        init_buckets(portfolio, params)
+        if reset_daily_counters_if_needed(portfolio):
+            atomic_write_json(portfolio, get_path("portfolio_state"))
+
     current_price = technical.get("close")
 
     # 10. Execution
@@ -922,6 +939,11 @@ def run_cycle() -> dict:
                 _exiting_bot = portfolio.get("entry_bot", "bot1")
                 portfolio = execute_exit(current_price, portfolio, exit_reason)
                 _save_completed_trade(completed_trade)
+                # Capital manager: update bucket capital + check safety limits
+                if cm_params.get("enabled", False):
+                    _bucket_key = bot_to_bucket_key(_exiting_bot)
+                    sync_exit_to_bucket(portfolio, _bucket_key)
+                    check_and_pause_if_needed(portfolio, _bucket_key, params)
                 # Cooldown tracking: set on SL, reset counter on successful exit
                 if exit_reason == "STOP_LOSS":
                     portfolio["last_sl_time"]  = str(pd.Timestamp.now("UTC"))
@@ -957,6 +979,9 @@ def run_cycle() -> dict:
                         completed_trade = _build_trade_record(portfolio, current_price, "bot2_timeout")
                         portfolio = execute_exit(current_price, portfolio, "bot2_timeout")
                         _save_completed_trade(completed_trade)
+                        if cm_params.get("enabled", False):
+                            sync_exit_to_bucket(portfolio, "btc_bot2")
+                            check_and_pause_if_needed(portfolio, "btc_bot2", params)
                         portfolio["consecutive_sl_count"] = 0
                         atomic_write_json(portfolio, get_path("portfolio_state"))
                         portfolio = load_portfolio()
@@ -974,32 +999,45 @@ def run_cycle() -> dict:
                 result["signal"] = "COOLDOWN"
                 result["cooldown_reason"] = cd_check["reason"]
             else:
-                rf_check = check_reversal_filter(technical, params)
+                # Capital manager gate
+                cm_check_b1: dict = {"can_enter": True, "reason": "cm_disabled"}
+                if cm_params.get("enabled", False):
+                    cm_check_b1 = cm_can_enter(portfolio, "btc_bot1", params)
+                    if not cm_check_b1["can_enter"]:
+                        logger.info(f"BOT1 CM BLOCKED: {cm_check_b1['reason']}")
+                        result["signal"] = "HOLD"
 
-                if rf_check["passed"]:
-                    atr_14 = technical.get("atr_14")
-                    portfolio = execute_entry(current_price, portfolio, atr_14=atr_14)
-                    _init_trade_tracking(portfolio, result, regime, technical, zscores)
-                    portfolio["entry_ret_1d"] = rf_check["ret_1d"]
-                    portfolio["entry_filter_passed"] = True
-                    portfolio["entry_bot"] = "bot1"
-                    atomic_write_json(portfolio, get_path("portfolio_state"))
-                    bot_entered = "bot1"
-                    logger.info(
-                        f"BOT1 ENTRY CONFIRMED: score={result.get('score', 0):.3f} | "
-                        f"RSI={rf_check['rsi']:.1f} (<{rf_check['rsi_max']}) | "
-                        f"ret_1d={rf_check['ret_1d']:.4f} (>{rf_check['ret_1d_min']})"
-                    )
-                else:
-                    logger.info(
-                        f"BOT1 ENTRY FILTERED: score={result.get('score', 0):.3f} | "
-                        f"RSI={rf_check['rsi']} | ret_1d={rf_check['ret_1d']} → "
-                        f"{rf_check['reason']}"
-                    )
-                    result["signal"] = "FILTERED"
-                    result["filter_reason"] = rf_check["reason"]
-                    result["filter_rsi"] = rf_check["rsi"]
-                    result["filter_ret_1d"] = rf_check["ret_1d"]
+                if cm_check_b1["can_enter"]:
+                    rf_check = check_reversal_filter(technical, params)
+
+                    if rf_check["passed"]:
+                        atr_14 = technical.get("atr_14")
+                        if cm_params.get("enabled", False):
+                            sync_capital_for_entry(portfolio, "btc_bot1")
+                        portfolio = execute_entry(current_price, portfolio, atr_14=atr_14)
+                        if cm_params.get("enabled", False):
+                            sync_entry_to_bucket(portfolio, "btc_bot1")
+                        _init_trade_tracking(portfolio, result, regime, technical, zscores)
+                        portfolio["entry_ret_1d"] = rf_check["ret_1d"]
+                        portfolio["entry_filter_passed"] = True
+                        portfolio["entry_bot"] = "bot1"
+                        atomic_write_json(portfolio, get_path("portfolio_state"))
+                        bot_entered = "bot1"
+                        logger.info(
+                            f"BOT1 ENTRY CONFIRMED: score={result.get('score', 0):.3f} | "
+                            f"RSI={rf_check['rsi']:.1f} (<{rf_check['rsi_max']}) | "
+                            f"ret_1d={rf_check['ret_1d']:.4f} (>{rf_check['ret_1d_min']})"
+                        )
+                    else:
+                        logger.info(
+                            f"BOT1 ENTRY FILTERED: score={result.get('score', 0):.3f} | "
+                            f"RSI={rf_check['rsi']} | ret_1d={rf_check['ret_1d']} → "
+                            f"{rf_check['reason']}"
+                        )
+                        result["signal"] = "FILTERED"
+                        result["filter_reason"] = rf_check["reason"]
+                        result["filter_rsi"] = rf_check["rsi"]
+                        result["filter_ret_1d"] = rf_check["ret_1d"]
 
         # Bot 2: Momentum — independent of gate scoring, runs if no position and not Bear
         if bot_entered is None and not portfolio["has_position"] and regime != "Bear":
@@ -1008,11 +1046,24 @@ def run_cycle() -> dict:
                 logger.info(f"BOT2 COOLDOWN ACTIVE: {cd_check_b2['reason']}")
                 mf_check = {"passed": False, "reason": cd_check_b2["reason"], "stablecoin_z": None}
             else:
-                mf_check = check_momentum_filter(technical, zscores, params)
+                # Capital manager gate
+                if cm_params.get("enabled", False):
+                    cm_check_b2 = cm_can_enter(portfolio, "btc_bot2", params)
+                    if not cm_check_b2["can_enter"]:
+                        logger.info(f"BOT2 CM BLOCKED: {cm_check_b2['reason']}")
+                        mf_check = {"passed": False, "reason": cm_check_b2["reason"], "stablecoin_z": None}
+                    else:
+                        mf_check = check_momentum_filter(technical, zscores, params)
+                else:
+                    mf_check = check_momentum_filter(technical, zscores, params)
 
             if mf_check["passed"]:
                 mf_params = params.get("momentum_filter", {})
+                if cm_params.get("enabled", False):
+                    sync_capital_for_entry(portfolio, "btc_bot2")
                 portfolio = _execute_bot2_entry(current_price, portfolio, mf_params)
+                if cm_params.get("enabled", False):
+                    sync_entry_to_bucket(portfolio, "btc_bot2")
                 _init_trade_tracking(portfolio, result, regime, technical, zscores)
                 portfolio["entry_bot"] = "bot2"
                 portfolio["entry_stablecoin_z"] = mf_check["stablecoin_z"]
