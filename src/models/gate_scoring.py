@@ -374,18 +374,25 @@ def run_scoring_pipeline(
     """
     # Adaptive weights — confidence weighting + kill switch graduado (G3–G10)
     adaptive_details: dict = {}
+    adaptive_summary: dict = {}
     effective_weights: Optional[dict] = None
+    global_conf_mult: float = 1.0
+    global_conf_label: str = "no_data"
     try:
-        from src.models.adaptive_weights import compute_adaptive_weights
+        from src.models.adaptive_weights import compute_adaptive_weights, get_global_multiplier
         params = get_params()
         if zs_daily is not None and spot_daily is not None and not zs_daily.empty:
             adaptive = compute_adaptive_weights(zs_daily, spot_daily, params)
             effective_weights = adaptive["weights"]
             adaptive_details = adaptive["details"]
+            adaptive_summary = adaptive["summary"]
+            global_conf_mult, global_conf_label = get_global_multiplier(adaptive, params)
             logger.info(
-                f"Adaptive weights: mean_conf={adaptive['summary']['mean_confidence']:.3f} "
-                f"ok={adaptive['summary']['n_ok']} reduced={adaptive['summary']['n_reduced']} "
-                f"severe={adaptive['summary']['n_severe']} extreme={adaptive['summary']['n_extreme']}"
+                f"Adaptive weights: mean_conf={adaptive_summary['mean_confidence']:.3f} "
+                f"wt_conf={adaptive_summary['weighted_mean_confidence']:.3f} "
+                f"global_mult={global_conf_mult:.3f} "
+                f"ok={adaptive_summary['n_ok']} reduced={adaptive_summary['n_reduced']} "
+                f"severe={adaptive_summary['n_severe']} extreme={adaptive_summary['n_extreme']}"
             )
     except Exception as e:
         logger.warning(f"Adaptive weights failed (using base weights): {e}")
@@ -461,12 +468,14 @@ def run_scoring_pipeline(
 
     # Cluster aggregation
     cluster_result = aggregate_clusters(gates)
-    total_score = cluster_result["total_score"]
+    score_raw = cluster_result["total_score"]
 
     # Apply G0 sideways multiplier
     multiplier = g0["multiplier"]
-    if multiplier != 1.0:
-        total_score = round(total_score * multiplier, 4)
+    score_after_regime = round(score_raw * multiplier, 4) if multiplier != 1.0 else score_raw
+
+    # Apply global confidence multiplier (pós-regime, pré-threshold)
+    total_score = round(score_after_regime * global_conf_mult, 4)
 
     # Threshold
     prox_adj = fed_context.get("proximity_adjustment", 0.0)
@@ -503,16 +512,20 @@ def run_scoring_pipeline(
 
     ma200_tag = f" [MA200:{ma200.get('close_vs_ma200_pct'):+.1f}%]" if ma200.get("close_vs_ma200_pct") is not None else ""
     logger.info(
-        f"Gate scoring: score={total_score:.3f} vs threshold={threshold:.3f} "
+        f"Gate scoring: score={total_score:.3f} (raw={score_raw:.3f} ×regime={multiplier} "
+        f"×gc={global_conf_mult:.3f}) vs thr={threshold:.3f} "
         f"→ {signal} (prox_adj={prox_adj:+.1f}, regime={regime}{ma200_tag})"
     )
 
     return {
         "signal": signal,
         "block_reason": block_reason,
-        "score": total_score,           # post-G0-multiplier (decision score)
-        "score_raw": cluster_result["total_score"],  # pre-multiplier cluster sum
+        "score": total_score,                    # pós-regime × pós-global-conf (decision)
+        "score_raw": score_raw,                  # Σ clusters, pré-multiplicadores
+        "score_after_regime": score_after_regime, # pós-regime, pré-global-conf
         "regime_multiplier": multiplier,
+        "global_confidence_multiplier": global_conf_mult,
+        "global_confidence_source": global_conf_label,
         "threshold": threshold,
         "gate_scores": gate_scores,
         "clusters": cluster_result["clusters"],

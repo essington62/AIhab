@@ -1059,6 +1059,9 @@ def run_cycle() -> dict:
     # Adaptive weights state — persisted for dashboard
     if result.get("adaptive_weights"):
         portfolio["last_adaptive_weights"] = result["adaptive_weights"]
+    portfolio["last_global_confidence_multiplier"] = result.get("global_confidence_multiplier", 1.0)
+    portfolio["last_global_confidence_source"] = result.get("global_confidence_source", "")
+    portfolio["last_score_after_regime"] = result.get("score_after_regime")
     atomic_write_json(portfolio, get_path("portfolio_state"))
 
     # 12. Log cycle

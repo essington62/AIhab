@@ -261,6 +261,8 @@ adaptive_weights:
     smooth_short: 0.3
     smooth_long: 0.7
     min_confidence: 0.0        # pode reduzir até zero
+    smoothing_days: 5          # média dos últimos N pontos (reduz ruído pontual)
+    weak_gate_threshold: 0.2   # abaixo disso, normaliza delta por magnitude
 
   # Kill switch graduado (aplicado SOBRE o confidence weighting)
   kill_switch:
@@ -268,6 +270,14 @@ adaptive_weights:
     severe_delta_threshold: 0.5      # delta >= 0.5 → weight *= 0.3
     severe_multiplier: 0.3           # reduz para 30%
     extreme_delta_threshold: 0.6     # delta >= 0.6 → weight = 0
+
+  # Global confidence: multiplicador sistêmico no score total (após regime_mult)
+  global_confidence:
+    enabled: true
+    source: "weighted_mean"    # "mean" ou "weighted_mean" (ponderado por base_weight)
+    min_multiplier: 0.2        # mínimo — evita score zerar completamente
+    max_multiplier: 1.0
+    apply_to: "total_score"
 
   # Fallback se não houver dados suficientes
   min_days_for_confidence: 20

@@ -926,6 +926,13 @@ def main():
     else:
         _ma200_header_html = ""
 
+    _hdr_gc_mult = portfolio.get("last_global_confidence_multiplier", 1.0) or 1.0
+    if _hdr_gc_mult < 0.95:
+        _hdr_gc_color = "neg" if _hdr_gc_mult < 0.6 else "warn"
+        _hdr_gc_html = f'<span class="header-item">GConf: <span class="{_hdr_gc_color}">×{_hdr_gc_mult:.2f}</span></span>'
+    else:
+        _hdr_gc_html = ""
+
     st.markdown(f"""
 <div class="header-bar">
   <span>₿ <span class="header-value">${price:,.0f}</span></span>
@@ -934,6 +941,7 @@ def main():
   <span class="header-item">F&G: <span class="header-value">{fg_val:.0f}</span> {fg_cls}</span>
   <span class="header-item">R5C: <span class="{regime_c} header-value">{regime}</span></span>
   {_ma200_header_html}
+  {_hdr_gc_html}
   <span class="header-item">Gate: <span class="{sig_class}">{"ENTER (Bot2 Mom)" if signal == "ENTER_BOT2" else signal}</span></span>
   <span class="header-item">Score: <span class="header-value">{score:.3f}</span> / {threshold:.1f}</span>
   <span class="header-item">Capital: <span class="header-value">${capital:,.0f}</span></span>
@@ -958,15 +966,26 @@ def main():
     else:
         bar_color = "#f85149"
 
-    # Regime multiplier breakdown (only shown when multiplier != 1.0)
-    if regime_multiplier != 1.0:
-        mult_label = f"× Regime {regime} ({regime_multiplier}×)"
+    # Score breakdown (regime mult + global conf, shown when either reduces score)
+    _score_gc_mult = portfolio.get("last_global_confidence_multiplier", 1.0) or 1.0
+    _score_gc_src  = portfolio.get("last_global_confidence_source", "") or ""
+    _show_gc = _score_gc_mult < 0.95
+    if regime_multiplier != 1.0 or _show_gc:
+        _parts = [f'<span>Σ clusters (bruto): {total_score_raw:+.3f}</span>']
+        if regime_multiplier != 1.0:
+            _parts.append(
+                f'<span style="color:#d29922;">× Regime {regime} ({regime_multiplier}×)</span>'
+            )
+        if _show_gc:
+            _gc_color_bd = "#f85149" if _score_gc_mult < 0.5 else "#d29922"
+            _parts.append(
+                f'<span style="color:{_gc_color_bd};">× GConf ({_score_gc_mult:.2f}×)</span>'
+            )
+        _parts.append(f'<b style="color:{bar_color};">= {total_score:+.3f}</b>')
         multiplier_html = (
             f'<div style="display:flex; justify-content:space-between; font-size:12px; '
-            f'color:#8b949e; margin-top:4px;">'
-            f'<span>Σ clusters (bruto): {total_score_raw:+.3f}</span>'
-            f'<span style="color:#d29922;">{mult_label} = '
-            f'<b style="color:{bar_color};">{total_score:+.3f}</b></span>'
+            f'color:#8b949e; margin-top:4px; flex-wrap:wrap; gap:4px;">'
+            + " | ".join(_parts) +
             f'</div>'
         )
     else:
@@ -1798,6 +1817,27 @@ def main():
     elif not _adaptive_details:
         st.caption("Adaptive weights não computados ainda (aguardando próximo ciclo)")
     else:
+        # ── Global Confidence Card ────────────────────────────────────────
+        _gc_val = portfolio.get("last_global_confidence_multiplier", 1.0) or 1.0
+        _gc_src = portfolio.get("last_global_confidence_source", "") or ""
+        _gc_bar_color = "#3fb950" if _gc_val > 0.8 else "#d29922" if _gc_val > 0.5 else "#f85149"
+        _gc_status_txt = (
+            "🟢 Sistema alinhado — operação normal" if _gc_val > 0.8
+            else "🟡 Sistema parcialmente alinhado — scoring reduzido" if _gc_val > 0.5
+            else "🔴 Sistema desalinhado — scoring muito reduzido, menos trades esperados"
+        )
+        st.markdown(f"""
+<div class="cg-card" style="border-left:5px solid {_gc_bar_color}; padding:14px 18px; margin-bottom:12px;">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <div>
+      <div class="cg-card-title">⚡ GLOBAL CONFIDENCE MULTIPLIER</div>
+      <div style="font-size:26px; font-weight:700; color:{_gc_bar_color};">×{_gc_val:.3f}</div>
+      <div class="cg-card-sub">Score total × {_gc_val:.3f} — {_gc_src}</div>
+    </div>
+    <div style="text-align:right; font-size:12px; color:#8b949e; max-width:55%;">{_gc_status_txt}</div>
+  </div>
+</div>""", unsafe_allow_html=True)
+
         _n_ok      = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "ok" and d.get("confidence", 0) > 0.8)
         _n_reduced = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "ok" and d.get("confidence", 0) <= 0.8)
         _n_severe  = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "severe")

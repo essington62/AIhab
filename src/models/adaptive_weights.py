@@ -1,10 +1,14 @@
 """
 Adaptive Weights — Confidence weighting + kill switch graduado.
 
-Três níveis de adaptação:
-1. Confidence weighting (delta < 0.5): redução suave
-2. Kill switch severo (delta >= 0.5): reduz para 30%
-3. Kill switch extremo (delta >= 0.6): zera completamente
+Pipeline por gate (G3–G10):
+  1. compute_rolling_correlations (suavizado pelos últimos N dias)
+  2. compute_delta_adjusted (normalização condicional para gates fracos)
+  3. compute_confidence (1 - delta, com piso min_confidence)
+  4. apply_kill_switch (severe/extreme sobre o effective_weight)
+
+Pipeline global:
+  5. get_global_multiplier (multiplicador no score total, pós-regime)
 """
 import logging
 from typing import Optional
@@ -32,8 +36,12 @@ def compute_rolling_correlations(
     zs_daily: pd.DataFrame,
     spot_daily: pd.Series,
     windows: list = [30, 60],
+    smoothing_days: int = 5,
 ) -> dict:
-    """Correlação rolling de cada gate com forward return 3d."""
+    """
+    Correlação rolling de cada gate com forward return 3d.
+    Retorna a média dos últimos `smoothing_days` valores para reduzir ruído pontual.
+    """
     ret_3d = spot_daily.pct_change(3).shift(-3) * 100
 
     results = {}
@@ -50,10 +58,54 @@ def compute_rolling_correlations(
                 continue
 
             rolling = df[zcol].rolling(w).corr(df["ret_3d"])
-            latest = rolling.dropna().iloc[-1] if not rolling.dropna().empty else None
-            results[zcol][w] = float(latest) if latest is not None else None
+            rolling_valid = rolling.dropna()
+
+            if rolling_valid.empty:
+                results[zcol][w] = None
+                continue
+
+            recent = rolling_valid.tail(smoothing_days)
+            results[zcol][w] = float(recent.mean()) if not recent.empty else None
 
     return results
+
+
+def compute_delta_adjusted(
+    corr_cfg: float,
+    corr_short: Optional[float],
+    corr_long: Optional[float],
+    smooth_short: float = 0.3,
+    smooth_long: float = 0.7,
+    weak_gate_threshold: float = 0.2,
+) -> Optional[float]:
+    """
+    Delta ponderado entre janelas, com normalização condicional para gates fracos.
+
+    - Se |corr_cfg| >= weak_gate_threshold: delta absoluto (gates fortes já são informativos)
+    - Se |corr_cfg| < weak_gate_threshold: normaliza por magnitude (escala em relação ao sinal)
+
+    Returns:
+        delta ajustado entre 0 e 1, ou None
+    """
+    if corr_short is None and corr_long is None:
+        return None
+
+    if corr_long is None:
+        raw_delta = abs(corr_cfg - corr_short)
+    elif corr_short is None:
+        raw_delta = abs(corr_cfg - corr_long)
+    else:
+        delta_short = abs(corr_cfg - corr_short)
+        delta_long = abs(corr_cfg - corr_long)
+        raw_delta = smooth_long * delta_long + smooth_short * delta_short
+
+    if abs(corr_cfg) < weak_gate_threshold:
+        scale = max(abs(corr_cfg), 0.1)
+        delta = raw_delta / scale
+    else:
+        delta = raw_delta
+
+    return min(delta, 1.0)
 
 
 def compute_delta_smooth(
@@ -63,23 +115,11 @@ def compute_delta_smooth(
     smooth_short: float = 0.3,
     smooth_long: float = 0.7,
 ) -> Optional[float]:
-    """
-    Delta suavizado (ponderado entre janelas short e long).
-
-    Returns:
-        delta smooth, ou None se sem dados
-    """
-    if corr_short is None and corr_long is None:
-        return None
-
-    if corr_long is None:
-        return abs(corr_cfg - corr_short)
-    if corr_short is None:
-        return abs(corr_cfg - corr_long)
-
-    delta_short = abs(corr_cfg - corr_short)
-    delta_long = abs(corr_cfg - corr_long)
-    return smooth_long * delta_long + smooth_short * delta_short
+    """Alias de compute_delta_adjusted sem normalização (backward compat)."""
+    return compute_delta_adjusted(
+        corr_cfg, corr_short, corr_long, smooth_short, smooth_long,
+        weak_gate_threshold=0.0,  # sem normalização
+    )
 
 
 def compute_confidence(delta: Optional[float], min_confidence: float = 0.0) -> float:
@@ -101,8 +141,7 @@ def apply_kill_switch(
     Aplica kill switch graduado sobre effective_weight.
 
     Returns:
-        (new_weight, status_label)
-        status_label: "ok" | "severe" | "extreme"
+        (new_weight, status_label)  —  status: "ok" | "severe" | "extreme"
     """
     if delta is None:
         return effective_weight, "ok"
@@ -114,6 +153,35 @@ def apply_kill_switch(
         return effective_weight * severe_multiplier, "severe"
 
     return effective_weight, "ok"
+
+
+def get_global_multiplier(adaptive_result: dict, params: dict) -> tuple[float, str]:
+    """
+    Retorna o multiplicador global a ser aplicado no score total (pós-regime_mult).
+
+    Returns:
+        (multiplier, source_label)
+    """
+    gc_cfg = params.get("adaptive_weights", {}).get("global_confidence", {})
+
+    if not gc_cfg.get("enabled", False):
+        return 1.0, "disabled"
+
+    source = gc_cfg.get("source", "weighted_mean")
+    min_mult = gc_cfg.get("min_multiplier", 0.2)
+    max_mult = gc_cfg.get("max_multiplier", 1.0)
+
+    summary = adaptive_result.get("summary", {})
+
+    if source == "weighted_mean":
+        conf = summary.get("weighted_mean_confidence", 1.0)
+        label = f"weighted_mean={conf:.3f}"
+    else:
+        conf = summary.get("mean_confidence", 1.0)
+        label = f"mean={conf:.3f}"
+
+    multiplier = max(min(conf, max_mult), min_mult)
+    return round(multiplier, 4), label
 
 
 def compute_adaptive_weights(
@@ -137,9 +205,12 @@ def compute_adaptive_weights(
             "details": {k: {
                 "gate": k, "base_weight": v, "effective_weight": v, "confidence": 1.0,
                 "kill_status": "ok", "delta": None, "corr_cfg": None, "corr_long": None,
+                "weak_gate_normalized": False,
             } for k, v in base_weights.items()},
-            "summary": {"n_ok": len(base_weights), "n_reduced": 0, "n_severe": 0,
-                        "n_extreme": 0, "mean_confidence": 1.0},
+            "summary": {
+                "n_ok": len(base_weights), "n_reduced": 0, "n_severe": 0,
+                "n_extreme": 0, "mean_confidence": 1.0, "weighted_mean_confidence": 1.0,
+            },
             "enabled": False,
         }
 
@@ -151,12 +222,16 @@ def compute_adaptive_weights(
     smooth_short = conf_cfg.get("smooth_short", 0.3)
     smooth_long = conf_cfg.get("smooth_long", 0.7)
     min_conf = conf_cfg.get("min_confidence", 0.0)
+    smoothing = conf_cfg.get("smoothing_days", 5)
+    weak_th = conf_cfg.get("weak_gate_threshold", 0.2)
 
     severe_th = ks_cfg.get("severe_delta_threshold", 0.5)
     severe_mult = ks_cfg.get("severe_multiplier", 0.3)
     extreme_th = ks_cfg.get("extreme_delta_threshold", 0.6)
 
-    rolling_corrs = compute_rolling_correlations(zs_daily, spot_daily, windows=[w_short, w_long])
+    rolling_corrs = compute_rolling_correlations(
+        zs_daily, spot_daily, windows=[w_short, w_long], smoothing_days=smoothing
+    )
 
     gp = params.get("gate_params", {})
     weights = {}
@@ -169,6 +244,7 @@ def compute_adaptive_weights(
         cfg = gp[gkey]
         corr_cfg = float(cfg[0])
         base_weight = float(cfg[2]) if len(cfg) >= 3 else 1.0
+        is_weak = abs(corr_cfg) < weak_th
 
         corr_short = rolling_corrs.get(zcol, {}).get(w_short)
         corr_long = rolling_corrs.get(zcol, {}).get(w_long)
@@ -179,11 +255,14 @@ def compute_adaptive_weights(
                 "gate": gname, "base_weight": base_weight, "effective_weight": base_weight,
                 "confidence": 1.0, "kill_status": "ok", "delta": None,
                 "corr_cfg": corr_cfg, "corr_short": None, "corr_long": None,
+                "weak_gate_normalized": is_weak,
                 "reason": "insufficient_data",
             }
             continue
 
-        delta = compute_delta_smooth(corr_cfg, corr_short, corr_long, smooth_short, smooth_long)
+        delta = compute_delta_adjusted(
+            corr_cfg, corr_short, corr_long, smooth_short, smooth_long, weak_th
+        )
 
         confidence = compute_confidence(delta, min_conf) if conf_cfg.get("enabled", True) else 1.0
         effective_weight = base_weight * confidence
@@ -200,7 +279,7 @@ def compute_adaptive_weights(
         elif kill_status == "severe":
             reason = f"SEVERE (delta={delta:.3f} >= {severe_th}, weight × {severe_mult})"
         elif confidence < 0.8:
-            reason = f"REDUCED (delta={delta:.3f}, conf={confidence:.2f})"
+            reason = f"REDUCED (delta={delta:.3f}, conf={confidence:.2f}{'  [norm]' if is_weak else ''})"
         else:
             reason = f"OK (delta={delta:.3f}, conf={confidence:.2f})"
 
@@ -215,14 +294,23 @@ def compute_adaptive_weights(
             "corr_cfg": round(corr_cfg, 4),
             "corr_short": round(corr_short, 4) if corr_short is not None else None,
             "corr_long": round(corr_long, 4) if corr_long is not None else None,
+            "weak_gate_normalized": is_weak,
             "reason": reason,
         }
 
-    n_ok = sum(1 for d in details.values() if d["kill_status"] == "ok" and d.get("confidence", 0) > 0.8)
+    n_ok      = sum(1 for d in details.values() if d["kill_status"] == "ok" and d.get("confidence", 0) > 0.8)
     n_reduced = sum(1 for d in details.values() if d["kill_status"] == "ok" and d.get("confidence", 0) <= 0.8)
-    n_severe = sum(1 for d in details.values() if d["kill_status"] == "severe")
+    n_severe  = sum(1 for d in details.values() if d["kill_status"] == "severe")
     n_extreme = sum(1 for d in details.values() if d["kill_status"] == "extreme")
-    mean_conf = float(np.mean([d["confidence"] for d in details.values()])) if details else 1.0
+
+    confidences = [d["confidence"] for d in details.values()] if details else [1.0]
+    mean_conf = float(np.mean(confidences))
+
+    total_w = sum(d["base_weight"] for d in details.values())
+    if total_w > 0 and details:
+        weighted_conf = sum(d["confidence"] * d["base_weight"] for d in details.values()) / total_w
+    else:
+        weighted_conf = mean_conf
 
     return {
         "weights": weights,
@@ -233,6 +321,7 @@ def compute_adaptive_weights(
             "n_severe": n_severe,
             "n_extreme": n_extreme,
             "mean_confidence": round(mean_conf, 4),
+            "weighted_mean_confidence": round(weighted_conf, 4),
         },
         "enabled": True,
     }
