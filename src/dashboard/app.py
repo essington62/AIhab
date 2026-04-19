@@ -1809,6 +1809,46 @@ def main():
   <span style="color:#8b949e;">Desde: </span>{entry_time}
 </div>""", unsafe_allow_html=True)
 
+    # ── Trade history Bot 1 ────────────────────────────────────────────────
+    def _filter_trades_by_bot(df: pd.DataFrame, bot: str) -> pd.DataFrame:
+        if df.empty:
+            return pd.DataFrame()
+        if "entry_bot" not in df.columns:
+            return df.copy() if bot == "bot1" else pd.DataFrame()
+        return df[df["entry_bot"] == bot].copy()
+
+    _trades_hist = load_parquet("data/05_output/trades.parquet")
+    _bot1_trades = _filter_trades_by_bot(_trades_hist, "bot1")
+
+    if not _bot1_trades.empty:
+        st.markdown("**Histórico de Trades — Bot 1**")
+        for _, _t in _bot1_trades.iterrows():
+            _et = pd.to_datetime(_t.get("entry_time"))
+            _xt = pd.to_datetime(_t.get("exit_time"))
+            _entry_ts = _et.strftime("%m/%d %H:%M") if pd.notna(_et) else "?"
+            _exit_ts  = _xt.strftime("%m/%d %H:%M") if pd.notna(_xt) else "?"
+            _ret      = _t.get("return_pct", 0) or 0
+            _ret_c    = "pos" if _ret > 0 else "neg"
+            _ep       = _t.get("entry_price", 0) or 0
+            _xp       = _t.get("exit_price", 0) or 0
+            _xrsn     = _t.get("exit_reason", "?")
+            _dur      = _t.get("duration_hours", 0) or 0
+            _rsi_e    = _t.get("entry_rsi", 0) or 0
+            _bb_e     = _t.get("entry_bb_pct", 0) or 0
+            _score_e  = _t.get("entry_score_adjusted", 0) or 0
+            st.markdown(f"""
+<div class="cg-card" style="padding:8px 16px; font-size:12px; margin-bottom:4px;">
+  <span style="color:#8b949e;">{_entry_ts} → {_exit_ts} ({_dur:.0f}h)</span>
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Entrada:</span> ${_ep:,.0f}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Saída:</span> ${_xp:,.0f} ({_xrsn})
+  &nbsp;|&nbsp; <span class="{_ret_c}" style="font-weight:700;">{_ret:+.2f}%</span>
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Score:</span> {_score_e:+.3f}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">RSI:</span> {_rsi_e:.1f}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">BB:</span> {_bb_e:.3f}
+</div>""", unsafe_allow_html=True)
+    else:
+        st.info("Nenhum trade Bot 1 completado ainda.")
+
     # ── Equity curve ───────────────────────────────────────────────────────
     if not cycle_log_df.empty and "capital_usd" in cycle_log_df.columns and len(cycle_log_df) > 2:
         cl = cycle_log_df.copy()
@@ -1953,16 +1993,31 @@ def main():
             sym = "✓" if ok else "✗"
             return f"<span style='color:{col};'>{val} {sym}</span>"
 
+        _spike_cfg     = _mf_params.get("spike_guard", {})
+        _spike_enabled = _spike_cfg.get("enabled", False)
+        _spike_ret_max = _spike_cfg.get("spike_ret_max", 0.03)
+        _spike_rsi_max = _spike_cfg.get("spike_rsi_max", 65)
+        _is_spike = (
+            _spike_enabled
+            and _ret1d_val is not None and _ret1d_val > _spike_ret_max
+            and _rsi_val is not None and _rsi_val > _spike_rsi_max
+        )
         _b2_all_pass = (
             _stable_z > _sz_min and
             _ret1d_val is not None and _ret1d_val > 0 and
             _rsi_val > 50 and _bb_val < 0.98 and _above_ma21
+            and not _is_spike
         )
         _b2_pass_html = (
             "<span style='color:#3fb950;'>✓ PASS</span>" if _b2_all_pass
             else f"<span style='color:#f85149;'>✗ FILTERED ({portfolio.get('last_momentum_reason', '')})</span>"
         )
         _ret1d_str = f"{_ret1d_val*100:.2f}%" if _ret1d_val is not None else "N/A"
+        _spike_html = (
+            f' &nbsp;|&nbsp; <span style="color:#f85149;">⚠️ SPIKE GUARD'
+            f' (ret={_ret1d_val*100:.1f}% + RSI={_rsi_val:.0f})</span>'
+            if _is_spike else ""
+        )
         st.markdown(
             f'<div class="cg-card" style="padding:8px 16px; font-size:12px;">'
             f'<span style="color:#8b949e;">Momentum Filter: </span>{_b2_pass_html}'
@@ -1976,6 +2031,7 @@ def main():
             f'{_b2_cond(_bb_val < 0.98, f"{_bb_val:.3f} (<0.98)")}'
             f' &nbsp;|&nbsp; <span style="color:#8b949e;">&gt;MA21: </span>'
             f'{_b2_cond(_above_ma21, "Yes" if _above_ma21 else "No")}'
+            f'{_spike_html}'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -2013,21 +2069,34 @@ def main():
         st.caption("Equity curve combinada (Bot 1 + Bot 2) disponível acima.")
 
         # ── Histórico de trades Bot 2 ─────────────────────────────────────
-        _b2_trades_path = ROOT / "data/05_output/completed_trades.json"
-        _b2_trades: list = []
-        if _b2_trades_path.exists():
-            try:
-                _all = json.loads(_b2_trades_path.read_text())
-                _b2_trades = [t for t in _all if t.get("entry_bot") == "bot2"]
-            except Exception:
-                _b2_trades = []
+        _bot2_trades = _filter_trades_by_bot(_trades_hist, "bot2")
 
-        if _b2_trades:
-            _b2_df = pd.DataFrame(_b2_trades)[
-                ["entry_time", "entry_price", "exit_price", "pnl_pct", "exit_reason"]
-            ]
-            _b2_df.columns = ["Entrada", "Preço Entrada", "Preço Saída", "P&L %", "Motivo Saída"]
-            st.dataframe(_b2_df, use_container_width=True, hide_index=True)
+        if not _bot2_trades.empty:
+            st.markdown("**Histórico de Trades — Bot 2**")
+            for _, _t2 in _bot2_trades.iterrows():
+                _et2 = pd.to_datetime(_t2.get("entry_time"))
+                _xt2 = pd.to_datetime(_t2.get("exit_time"))
+                _entry_ts2 = _et2.strftime("%m/%d %H:%M") if pd.notna(_et2) else "?"
+                _exit_ts2  = _xt2.strftime("%m/%d %H:%M") if pd.notna(_xt2) else "?"
+                _ret2      = _t2.get("return_pct", 0) or 0
+                _ret_c2    = "pos" if _ret2 > 0 else "neg"
+                _ep2       = _t2.get("entry_price", 0) or 0
+                _xp2       = _t2.get("exit_price", 0) or 0
+                _xrsn2     = _t2.get("exit_reason", "?")
+                _dur2      = _t2.get("duration_hours", 0) or 0
+                _rsi_e2    = _t2.get("entry_rsi", 0) or 0
+                _bb_e2     = _t2.get("entry_bb_pct", 0) or 0
+                _stab_e2   = _t2.get("entry_stablecoin_z", 0) or 0
+                st.markdown(f"""
+<div class="cg-card" style="padding:8px 16px; font-size:12px; margin-bottom:4px;">
+  <span style="color:#8b949e;">{_entry_ts2} → {_exit_ts2} ({_dur2:.0f}h)</span>
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Entrada:</span> ${_ep2:,.0f}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Saída:</span> ${_xp2:,.0f} ({_xrsn2})
+  &nbsp;|&nbsp; <span class="{_ret_c2}" style="font-weight:700;">{_ret2:+.2f}%</span>
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Stablecoin Z:</span> {_stab_e2:.2f}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">RSI:</span> {_rsi_e2:.1f}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">BB:</span> {_bb_e2:.3f}
+</div>""", unsafe_allow_html=True)
         else:
             st.info("Nenhum trade Bot 2 completado ainda.")
 

@@ -138,3 +138,90 @@ class TestMomentumFilterBoundary:
     def test_rsi_just_above_50(self):
         r = check_momentum_filter(_tech(rsi=50.1), _zscores(), PARAMS_ENABLED)
         assert r["passed"] is True
+
+
+class TestSpikeGuard:
+    """Tests for spike guard (late entry protection)."""
+
+    PARAMS_SPIKE = {
+        "momentum_filter": {
+            "enabled": True,
+            "stablecoin_z_min": 1.3,
+            "ret_1d_min": 0.0,
+            "rsi_min": 50,
+            "bb_pct_max": 0.98,
+            "require_above_ma21": True,
+            "spike_guard": {
+                "enabled": True,
+                "spike_ret_max": 0.03,
+                "spike_rsi_max": 65,
+            },
+        }
+    }
+
+    def test_spike_blocks_high_ret_and_high_rsi(self):
+        """ret_1d > 3% AND RSI > 65 → LATE_SPIKE."""
+        r = check_momentum_filter(
+            _tech(ret=0.035, rsi=72),
+            _zscores(),
+            self.PARAMS_SPIKE,
+        )
+        assert r["passed"] is False
+        assert "LATE_SPIKE" in r["reason"]
+
+    def test_spike_allows_high_ret_low_rsi(self):
+        """ret_1d > 3% but RSI <= 65 → should pass (only one condition)."""
+        r = check_momentum_filter(
+            _tech(ret=0.035, rsi=55),
+            _zscores(),
+            self.PARAMS_SPIKE,
+        )
+        assert r["passed"] is True
+
+    def test_spike_allows_low_ret_high_rsi(self):
+        """RSI > 65 but ret_1d <= 3% → should pass (only one condition)."""
+        r = check_momentum_filter(
+            _tech(ret=0.01, rsi=72),
+            _zscores(),
+            self.PARAMS_SPIKE,
+        )
+        assert r["passed"] is True
+
+    def test_spike_exact_thresholds_should_pass(self):
+        """ret_1d == 3% AND RSI == 65 → should pass (need strictly > )."""
+        r = check_momentum_filter(
+            _tech(ret=0.03, rsi=65),
+            _zscores(),
+            self.PARAMS_SPIKE,
+        )
+        assert r["passed"] is True
+
+    def test_spike_guard_disabled(self):
+        """Spike guard disabled → should not block even with extreme values."""
+        params_no_spike = {
+            "momentum_filter": {
+                "enabled": True,
+                "stablecoin_z_min": 1.3,
+                "ret_1d_min": 0.0,
+                "rsi_min": 50,
+                "bb_pct_max": 0.98,
+                "require_above_ma21": True,
+                "spike_guard": {"enabled": False},
+            }
+        }
+        r = check_momentum_filter(
+            _tech(ret=0.05, rsi=80),
+            _zscores(),
+            params_no_spike,
+        )
+        assert r["passed"] is True
+
+    def test_spike_reproduces_failed_trade(self):
+        """Reproduce the actual failed trade: ret_1d=3.2%, RSI=72.8."""
+        r = check_momentum_filter(
+            _tech(ret=0.032, rsi=72.8, bb=0.743, close=77459, ma21=76000),
+            _zscores(stable_z=2.09),
+            self.PARAMS_SPIKE,
+        )
+        assert r["passed"] is False
+        assert "LATE_SPIKE" in r["reason"]

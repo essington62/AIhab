@@ -201,6 +201,13 @@ momentum_filter:
   bb_pct_max: 0.98           # BB% máximo (filtro anti blow-off top)
   require_above_ma21: true   # Preço deve estar acima da MA21
 
+  # Anti-spike guard: bloqueia entrada tardia em rally já estendido
+  # Se ret_1d > spike_ret_max E RSI > spike_rsi_max → LATE_SPIKE → não entra
+  spike_guard:
+    enabled: true
+    spike_ret_max: 0.03     # ret_1d > 3% = rally já estendido
+    spike_rsi_max: 65       # RSI > 65 + ret > 3% = entrada tardia
+
   # Stops específicos do Bot 2 (mais apertados que Bot 1)
   stop_loss_pct: 0.015       # SL 1.5%
   take_profit_pct: 0.02      # SG 2%

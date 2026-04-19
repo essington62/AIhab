@@ -528,6 +528,16 @@ def check_momentum_filter(technical: dict, zscores: dict, params: dict) -> dict:
     if require_ma21 and close <= ma_21:
         reasons.append(f"BELOW_MA21 (close={close:.0f} <= MA21={ma_21:.0f})")
 
+    spike_cfg = mf.get("spike_guard", {})
+    if spike_cfg.get("enabled", False):
+        spike_ret_max = spike_cfg.get("spike_ret_max", 0.03)
+        spike_rsi_max = spike_cfg.get("spike_rsi_max", 65)
+        if ret_1d > spike_ret_max and rsi > spike_rsi_max:
+            reasons.append(
+                f"LATE_SPIKE (ret_1d={ret_1d:.4f} > {spike_ret_max} "
+                f"AND RSI={rsi:.1f} > {spike_rsi_max})"
+            )
+
     if reasons:
         result["passed"] = False
         result["reason"] = " & ".join(reasons)
