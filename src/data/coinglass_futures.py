@@ -1,15 +1,23 @@
 """
 CoinGlass v4 futures ingest — cross-exchange aggregated derivatives.
 Writes to: data/01_raw/futures/
-  - oi_4h.parquet       (aggregated cross-exchange OI in USD)
-  - funding_4h.parquet  (OI-weighted funding rate, cross-exchange)
-  - taker_4h.parquet    (Binance taker buy/sell volumes + ratio)
+  BTC (backward compat):  oi_4h.parquet, funding_4h.parquet, taker_4h.parquet
+  ETH (and other coins):  eth_oi_4h.parquet, eth_funding_4h.parquet, eth_taker_4h.parquet
+
+Public API (multi-symbol):
+  fetch_oi_4h(symbol, start_time)
+  fetch_funding_4h(symbol, start_time)
+  fetch_taker_4h(symbol, start_time)
+  run()  — backward compat BTC-only
 
 Replaces: src/data/binance_futures.py (Binance-only, 1h)
 Rationale: CoinGlass aggregated OI = $51.8B vs Binance-only $6.5B (12%)
 
 API: open-api-v4.coinglass.com  Header: CG-API-KEY
 Credentials: conf/credentials.yml → coinglass_api_key
+
+Note on history depth: CoinGlass 4h endpoints return last N candles (limit=1080 ≈ 180 days).
+No startTime pagination available — bootstrap limited to ~180 days for OI/Funding/Taker.
 
 Confirmed field schemas (tested 2026-04-08):
   OI agg:       time(ms), open, high, low, close  [close = OI USD]
@@ -226,6 +234,175 @@ def run() -> None:
             logger.info(f"{filename}: +{len(df)} rows")
         except Exception as e:
             logger.error(f"{filename}: fetch failed — {e}")
+
+
+# ---------------------------------------------------------------------------
+# Multi-symbol public API
+# ---------------------------------------------------------------------------
+
+def _futures_path(symbol: str, base_name: str) -> Path:
+    """BTC keeps legacy name (no prefix); other symbols get symbol prefix."""
+    if symbol.upper() == "BTC":
+        return RAW_DIR / base_name
+    return RAW_DIR / f"{symbol.lower()}_{base_name}"
+
+
+def fetch_oi_4h(symbol: str = "BTC", start_time=None) -> None:
+    """
+    Fetch cross-exchange aggregated OI 4h for any symbol.
+    Output: data/01_raw/futures/{symbol}_oi_4h.parquet  (BTC: oi_4h.parquet)
+    Note: CoinGlass limit=1080 ≈ last 180 days; no startTime pagination.
+    """
+    try:
+        api_key = _load_api_key()
+    except ValueError as e:
+        logger.warning(f"fetch_oi_4h({symbol}) skipped: {e}")
+        return
+
+    filepath = _futures_path(symbol, "oi_4h.parquet")
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Fetching {symbol} OI 4h")
+    try:
+        data = fetch_with_retry(
+            f"{BASE_URL}/api/futures/open-interest/aggregated-history",
+            headers=_headers(api_key),
+            params={"symbol": symbol.upper(), "interval": "4h", "limit": 1080, "unit": "usd"},
+        )
+        if not _check_response(data, f"oi/{symbol}"):
+            return
+
+        rows = data.get("data", [])
+        if not rows:
+            logger.info(f"{symbol} OI: empty response")
+            return
+
+        df = pd.DataFrame(rows)
+        out = pd.DataFrame()
+        out["timestamp"] = pd.to_datetime(df["time"].astype("int64"), unit="ms", utc=True)
+        out["open_interest"] = df["close"].astype(float)
+        out["source"] = f"coinglass_oi_agg_{symbol.lower()}"
+        out = out.dropna(subset=["open_interest"])
+
+        last_ts = _get_last_ts(filepath)
+        if last_ts is not None:
+            out = out[out["timestamp"] > last_ts]
+
+        if out.empty:
+            logger.info(f"{symbol} OI: already up to date")
+            return
+
+        append_and_save(out, filepath, freq="4h")
+        logger.info(f"{symbol} OI 4h: +{len(out)} rows → {filepath}")
+    except Exception as e:
+        logger.error(f"{symbol} OI 4h: failed — {e}")
+
+
+def fetch_funding_4h(symbol: str = "BTC", start_time=None) -> None:
+    """
+    Fetch OI-weighted funding rate 4h for any symbol.
+    Output: data/01_raw/futures/{symbol}_funding_4h.parquet  (BTC: funding_4h.parquet)
+    """
+    try:
+        api_key = _load_api_key()
+    except ValueError as e:
+        logger.warning(f"fetch_funding_4h({symbol}) skipped: {e}")
+        return
+
+    filepath = _futures_path(symbol, "funding_4h.parquet")
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+
+    logger.info(f"Fetching {symbol} Funding 4h")
+    try:
+        data = fetch_with_retry(
+            f"{BASE_URL}/api/futures/funding-rate/oi-weight-history",
+            headers=_headers(api_key),
+            params={"symbol": symbol.upper(), "interval": "4h", "limit": 1080},
+        )
+        if not _check_response(data, f"funding/{symbol}"):
+            return
+
+        rows = data.get("data", [])
+        if not rows:
+            logger.info(f"{symbol} Funding: empty response")
+            return
+
+        df = pd.DataFrame(rows)
+        out = pd.DataFrame()
+        out["timestamp"] = pd.to_datetime(df["time"].astype("int64"), unit="ms", utc=True)
+        out["funding_rate"] = pd.to_numeric(df["close"], errors="coerce")
+        out["source"] = f"coinglass_funding_oi_{symbol.lower()}"
+        out = out.dropna(subset=["funding_rate"])
+
+        last_ts = _get_last_ts(filepath)
+        if last_ts is not None:
+            out = out[out["timestamp"] > last_ts]
+
+        if out.empty:
+            logger.info(f"{symbol} Funding: already up to date")
+            return
+
+        append_and_save(out, filepath, freq="4h")
+        logger.info(f"{symbol} Funding 4h: +{len(out)} rows → {filepath}")
+    except Exception as e:
+        logger.error(f"{symbol} Funding 4h: failed — {e}")
+
+
+def fetch_taker_4h(symbol: str = "BTC", start_time=None) -> None:
+    """
+    Fetch Binance taker buy/sell volume 4h for any symbol.
+    Output: data/01_raw/futures/{symbol}_taker_4h.parquet  (BTC: taker_4h.parquet)
+    """
+    try:
+        api_key = _load_api_key()
+    except ValueError as e:
+        logger.warning(f"fetch_taker_4h({symbol}) skipped: {e}")
+        return
+
+    filepath = _futures_path(symbol, "taker_4h.parquet")
+    RAW_DIR.mkdir(parents=True, exist_ok=True)
+
+    pair = f"{symbol.upper()}USDT"
+    logger.info(f"Fetching {symbol} Taker 4h")
+    try:
+        data = fetch_with_retry(
+            f"{BASE_URL}/api/futures/v2/taker-buy-sell-volume/history",
+            headers=_headers(api_key),
+            params={"exchange": "Binance", "symbol": pair, "interval": "4h", "limit": 1080},
+        )
+        if not _check_response(data, f"taker/{symbol}"):
+            logger.warning(
+                f"{symbol} Taker: API error — may not be available on current plan"
+            )
+            return
+
+        rows = data.get("data", [])
+        if not rows:
+            logger.info(f"{symbol} Taker: empty response")
+            return
+
+        df = pd.DataFrame(rows)
+        out = pd.DataFrame()
+        out["timestamp"] = pd.to_datetime(df["time"].astype("int64"), unit="ms", utc=True)
+        out["buy_volume_usd"] = pd.to_numeric(df.get("taker_buy_volume_usd"), errors="coerce")
+        out["sell_volume_usd"] = pd.to_numeric(df.get("taker_sell_volume_usd"), errors="coerce")
+        total = out["buy_volume_usd"] + out["sell_volume_usd"]
+        out["buy_sell_ratio"] = (out["buy_volume_usd"] / total.replace(0, float("nan"))).round(6)
+        out["source"] = f"coinglass_taker_{symbol.lower()}"
+        out = out.dropna(subset=["buy_volume_usd"])
+
+        last_ts = _get_last_ts(filepath)
+        if last_ts is not None:
+            out = out[out["timestamp"] > last_ts]
+
+        if out.empty:
+            logger.info(f"{symbol} Taker: already up to date")
+            return
+
+        append_and_save(out, filepath, freq="4h")
+        logger.info(f"{symbol} Taker 4h: +{len(out)} rows → {filepath}")
+    except Exception as e:
+        logger.error(f"{symbol} Taker 4h: failed — {e}")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,10 @@
 """
 Binance Spot OHLCV ingest — 1h candles.
-Writes to: data/01_raw/spot/btc_1h.parquet
+Writes to: data/01_raw/spot/{symbol}_1h.parquet  (e.g. btc_1h.parquet, eth_1h.parquet)
+
+Public API:
+  fetch_spot_1h(symbol, start_time) — multi-symbol, batched, bootstrap-capable
+  run()                             — backward compat BTC-only incremental
 """
 
 import logging
@@ -83,6 +87,56 @@ def run(start_ms: int | None = None) -> None:
         return
 
     append_and_save(new_df, RAW_PATH, freq="1h")
+
+
+def fetch_spot_1h(symbol: str = "BTC", start_time=None) -> None:
+    """
+    Multi-symbol 1h spot ingest with batch pagination.
+
+    Args:
+        symbol:     BTC, ETH, SOL, etc. (converted to {symbol}USDT for API)
+        start_time: pd.Timestamp or datetime — start of range for bootstrap.
+                    If None, resumes from last saved timestamp or defaults 90 days.
+
+    Output: data/01_raw/spot/{symbol.lower()}_1h.parquet
+    Loops in batches of LIMIT candles — supports full-year bootstrap (~9 calls).
+    """
+    pair = f"{symbol.upper()}USDT"
+    raw_path = Path(f"data/01_raw/spot/{symbol.lower()}_1h.parquet")
+
+    last_ts = get_last_timestamp(raw_path)
+    if last_ts is not None:
+        cur_ms = int(last_ts.timestamp() * 1000) + 1
+        logger.info(f"{symbol} 1h: incremental from {last_ts}")
+    elif start_time is not None:
+        ts = pd.Timestamp(start_time)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        cur_ms = int(ts.timestamp() * 1000)
+        logger.info(f"{symbol} 1h: bootstrap from {ts}")
+    else:
+        cur_ms = int((pd.Timestamp.utcnow() - pd.Timedelta(days=90)).timestamp() * 1000)
+        logger.info(f"{symbol} 1h: default 90 days")
+
+    now_ms = int(pd.Timestamp.utcnow().timestamp() * 1000)
+    all_batches: list[pd.DataFrame] = []
+
+    while cur_ms < now_ms:
+        batch = fetch_spot_klines(symbol=pair, start_ms=cur_ms)
+        if batch.empty:
+            break
+        all_batches.append(batch)
+        if len(batch) < LIMIT:
+            break
+        cur_ms = int(batch["timestamp"].max().timestamp() * 1000) + 1
+
+    if not all_batches:
+        logger.info(f"{symbol} 1h: no new data")
+        return
+
+    df = pd.concat(all_batches, ignore_index=True)
+    append_and_save(df, raw_path, freq="1h")
+    logger.info(f"{symbol} 1h: +{len(df)} new rows → {raw_path}")
 
 
 if __name__ == "__main__":
