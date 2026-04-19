@@ -827,7 +827,11 @@ def main():
     # Apply G0 regime multiplier (mirrors gate_scoring.py; Sideways reads from params)
     _sw_mult = float(load_params().get("sideways_multiplier", 0.5))
     regime_multiplier = {"Sideways": _sw_mult, "Bear": 0.0, "Bull": 1.0}.get(regime, 1.0)
-    total_score = round(total_score_raw * regime_multiplier, 4)
+    total_score_after_regime = round(total_score_raw * regime_multiplier, 4)
+
+    # Apply global confidence multiplier (portfolio is source of truth — backend computed it)
+    global_conf_mult = portfolio.get("last_global_confidence_multiplier", 1.0) or 1.0
+    total_score = round(total_score_after_regime * global_conf_mult, 4)
 
     # Re-evaluate kill switches on fresh data (mirrors gate_scoring.check_kill_switches)
     # Result: signal_computed is consistent with total_score shown in the body
@@ -967,9 +971,9 @@ def main():
         bar_color = "#f85149"
 
     # Score breakdown (regime mult + global conf, shown when either reduces score)
-    _score_gc_mult = portfolio.get("last_global_confidence_multiplier", 1.0) or 1.0
+    # Note: global_conf_mult already computed above (same portfolio key)
     _score_gc_src  = portfolio.get("last_global_confidence_source", "") or ""
-    _show_gc = _score_gc_mult < 0.95
+    _show_gc = global_conf_mult < 0.95
     if regime_multiplier != 1.0 or _show_gc:
         _parts = [f'<span>Σ clusters (bruto): {total_score_raw:+.3f}</span>']
         if regime_multiplier != 1.0:
@@ -977,9 +981,9 @@ def main():
                 f'<span style="color:#d29922;">× Regime {regime} ({regime_multiplier}×)</span>'
             )
         if _show_gc:
-            _gc_color_bd = "#f85149" if _score_gc_mult < 0.5 else "#d29922"
+            _gc_color_bd = "#f85149" if global_conf_mult < 0.5 else "#d29922"
             _parts.append(
-                f'<span style="color:{_gc_color_bd};">× GConf ({_score_gc_mult:.2f}×)</span>'
+                f'<span style="color:{_gc_color_bd};">× GConf ({global_conf_mult:.2f}×)</span>'
             )
         _parts.append(f'<b style="color:{bar_color};">= {total_score:+.3f}</b>')
         multiplier_html = (
