@@ -859,7 +859,7 @@ def main():
     # =========================================================================
     # SECTION 1: HEADER
     # =========================================================================
-    sig_class = {"ENTER": "signal-enter", "ENTER_BOT2": "signal-enter", "HOLD": "signal-hold", "BLOCK": "signal-block", "FILTERED": "signal-filter"}.get(signal, "neut")
+    sig_class = {"ENTER": "signal-enter", "ENTER_BOT2": "signal-enter", "HOLD": "signal-hold", "BLOCK": "signal-block", "FILTERED": "signal-filter", "COOLDOWN": "signal-filter"}.get(signal, "neut")
     price_c   = "pos" if pct_24h >= 0 else "neg"
     regime_c  = {"Bull": "pos", "Bear": "neg", "Sideways": "warn"}.get(regime, "neut")
     fed_note  = f"Fed: {fomc['next_event']} em {fomc['days_away']}d" if fomc["next_event"] else "Fed: sem eventos próximos"
@@ -1779,6 +1779,45 @@ def main():
 
     _mf_params = _params.get("momentum_filter", {})
 
+    # ── Bot 1 cooldown bar (shown when cooldown is active) ─────────────────
+    _last_sl_time  = portfolio.get("last_sl_time")
+    _last_sl_bot   = portfolio.get("last_sl_bot")
+    _consec_sl     = portfolio.get("consecutive_sl_count", 0)
+    if _last_sl_time and _last_sl_bot in (None, "bot1"):
+        try:
+            _sl_ts       = pd.Timestamp(_last_sl_time)
+            if _sl_ts.tzinfo is None:
+                _sl_ts = _sl_ts.tz_localize("UTC")
+            _hours_since = (pd.Timestamp.now(tz="UTC") - _sl_ts).total_seconds() / 3600
+            _cd_cfg      = _params.get("reversal_filter", {}).get("cooldown", {})
+            _cd_hours    = _cd_cfg.get("hours_after_sl", 12)
+            _max_consec  = _cd_cfg.get("max_consecutive_sl", 3)
+            if _consec_sl >= _max_consec:
+                _cd_hours = _cd_cfg.get("consecutive_sl_pause_hours", 24)
+            _sl_price  = portfolio.get("last_sl_price", 0) or 0
+            _price_ok  = price > _sl_price if _sl_price else True
+            _time_ok   = _hours_since >= _cd_hours
+            if not _time_ok or not _price_ok:
+                _remaining = max(0.0, _cd_hours - _hours_since)
+                _consec_warn = (
+                    f' &nbsp;|&nbsp; <span style="color:#f85149;">⚠️ PAUSA ESTENDIDA ({_cd_hours}h)</span>'
+                    if _consec_sl >= _max_consec else ""
+                )
+                st.markdown(
+                    f'<div class="cg-card" style="padding:8px 16px; font-size:12px; border-left:3px solid #f85149;">'
+                    f'<span style="color:#f85149;">⏸️ COOLDOWN ATIVO (Bot 1)</span>'
+                    f' &nbsp;|&nbsp; <span style="color:#8b949e;">Último SL:</span> {_hours_since:.1f}h atrás (min {_cd_hours}h)'
+                    f' &nbsp;|&nbsp; <span style="color:#8b949e;">Preço saída:</span> ${_sl_price:,.0f}'
+                    f' <span class="{"pos" if _price_ok else "neg"}">{"(✓ acima)" if _price_ok else "(✗ abaixo)"}</span>'
+                    f' &nbsp;|&nbsp; <span style="color:#8b949e;">SLs consecutivos:</span> {_consec_sl}'
+                    f' &nbsp;|&nbsp; <span style="color:#8b949e;">Restante:</span> {_remaining:.1f}h'
+                    f'{_consec_warn}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+        except Exception:
+            pass
+
     if has_pos and entry_px and portfolio.get("entry_bot", "bot1") == "bot1":
         _stops_mode  = portfolio.get("stops_mode", "fixed")
         _atr_pct     = portfolio.get("entry_atr_pct")
@@ -2035,6 +2074,42 @@ def main():
             f'</div>',
             unsafe_allow_html=True,
         )
+
+        # ── Bot 2 cooldown bar ────────────────────────────────────────────
+        if _last_sl_time and _last_sl_bot == "bot2":
+            try:
+                _sl_ts2      = pd.Timestamp(_last_sl_time)
+                if _sl_ts2.tzinfo is None:
+                    _sl_ts2 = _sl_ts2.tz_localize("UTC")
+                _hours_since2 = (pd.Timestamp.now(tz="UTC") - _sl_ts2).total_seconds() / 3600
+                _cd_cfg2     = _mf_params.get("cooldown", {})
+                _cd_hours2   = _cd_cfg2.get("hours_after_sl", 12)
+                _max_consec2 = _cd_cfg2.get("max_consecutive_sl", 3)
+                if _consec_sl >= _max_consec2:
+                    _cd_hours2 = _cd_cfg2.get("consecutive_sl_pause_hours", 24)
+                _sl_price2 = portfolio.get("last_sl_price", 0) or 0
+                _price_ok2 = price > _sl_price2 if _sl_price2 else True
+                _time_ok2  = _hours_since2 >= _cd_hours2
+                if not _time_ok2 or not _price_ok2:
+                    _remaining2 = max(0.0, _cd_hours2 - _hours_since2)
+                    _consec_warn2 = (
+                        f' &nbsp;|&nbsp; <span style="color:#f85149;">⚠️ PAUSA ESTENDIDA ({_cd_hours2}h)</span>'
+                        if _consec_sl >= _max_consec2 else ""
+                    )
+                    st.markdown(
+                        f'<div class="cg-card" style="padding:8px 16px; font-size:12px; border-left:3px solid #f85149;">'
+                        f'<span style="color:#f85149;">⏸️ COOLDOWN ATIVO (Bot 2)</span>'
+                        f' &nbsp;|&nbsp; <span style="color:#8b949e;">Último SL:</span> {_hours_since2:.1f}h atrás (min {_cd_hours2}h)'
+                        f' &nbsp;|&nbsp; <span style="color:#8b949e;">Preço saída:</span> ${_sl_price2:,.0f}'
+                        f' <span class="{"pos" if _price_ok2 else "neg"}">{"(✓ acima)" if _price_ok2 else "(✗ abaixo)"}</span>'
+                        f' &nbsp;|&nbsp; <span style="color:#8b949e;">SLs consecutivos:</span> {_consec_sl}'
+                        f' &nbsp;|&nbsp; <span style="color:#8b949e;">Restante:</span> {_remaining2:.1f}h'
+                        f'{_consec_warn2}'
+                        f'</div>',
+                        unsafe_allow_html=True,
+                    )
+            except Exception:
+                pass
 
         # ── Bot 2 stops (when entry_bot == "bot2") ────────────────────────
         if _b2_has_pos and entry_px:

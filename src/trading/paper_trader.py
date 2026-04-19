@@ -454,6 +454,87 @@ def _save_completed_trade(record: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cooldown (prevents immediate reentry after a stop loss)
+# ---------------------------------------------------------------------------
+
+def check_cooldown(portfolio: dict, current_price: float, bot: str, params: dict) -> dict:
+    """
+    Check if cooldown is active after a stop loss.
+
+    Returns dict with keys: can_enter (bool), reason (str),
+    hours_remaining (float), consecutive_sl (int), price_above_exit (bool|None).
+    """
+    if bot == "bot1":
+        cd_cfg = params.get("reversal_filter", {}).get("cooldown", {})
+    else:
+        cd_cfg = params.get("momentum_filter", {}).get("cooldown", {})
+
+    if not cd_cfg.get("enabled", False):
+        return {"can_enter": True, "reason": "cooldown_disabled"}
+
+    last_sl_time  = portfolio.get("last_sl_time")
+    last_sl_price = portfolio.get("last_sl_price")
+    last_sl_bot   = portfolio.get("last_sl_bot")
+    consecutive_sl = portfolio.get("consecutive_sl_count", 0)
+
+    if not last_sl_time:
+        return {"can_enter": True, "reason": "no_previous_sl"}
+
+    # SL from a different bot does not block this bot
+    if last_sl_bot and last_sl_bot != bot:
+        return {"can_enter": True, "reason": f"sl_was_{last_sl_bot}_not_{bot}"}
+
+    try:
+        sl_time = pd.Timestamp(last_sl_time)
+        if sl_time.tzinfo is None:
+            sl_time = sl_time.tz_localize("UTC")
+        now = pd.Timestamp.now("UTC")
+        hours_since_sl = (now - sl_time).total_seconds() / 3600
+    except Exception:
+        return {"can_enter": True, "reason": "invalid_sl_time"}
+
+    hours_required = cd_cfg.get("hours_after_sl", 12)
+    max_consecutive = cd_cfg.get("max_consecutive_sl", 3)
+    pause_hours = cd_cfg.get("consecutive_sl_pause_hours", 24)
+
+    if consecutive_sl >= max_consecutive:
+        hours_required = pause_hours
+
+    if hours_since_sl < hours_required:
+        hours_remaining = hours_required - hours_since_sl
+        consec_suffix = f", CONSECUTIVE_SL={consecutive_sl}" if consecutive_sl >= max_consecutive else ""
+        return {
+            "can_enter": False,
+            "reason": (
+                f"COOLDOWN ({hours_since_sl:.1f}h / {hours_required}h required{consec_suffix})"
+            ),
+            "hours_remaining": hours_remaining,
+            "consecutive_sl": consecutive_sl,
+            "price_above_exit": None,
+        }
+
+    require_above = cd_cfg.get("require_price_above_exit", True)
+    if require_above and last_sl_price and current_price <= last_sl_price:
+        return {
+            "can_enter": False,
+            "reason": (
+                f"PRICE_BELOW_EXIT (current={current_price:.0f} <= sl_exit={last_sl_price:.0f})"
+            ),
+            "hours_remaining": 0,
+            "consecutive_sl": consecutive_sl,
+            "price_above_exit": False,
+        }
+
+    return {
+        "can_enter": True,
+        "reason": "cooldown_passed",
+        "hours_remaining": 0,
+        "consecutive_sl": consecutive_sl,
+        "price_above_exit": True,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Reversal filter (entry confirmation — applied after scoring says ENTER)
 # ---------------------------------------------------------------------------
 
@@ -818,8 +899,23 @@ def run_cycle() -> dict:
             if exit_triggered:
                 # Build completed trade record BEFORE execute_exit clears portfolio state
                 completed_trade = _build_trade_record(portfolio, current_price, exit_reason)
+                _exiting_bot = portfolio.get("entry_bot", "bot1")
                 portfolio = execute_exit(current_price, portfolio, exit_reason)
                 _save_completed_trade(completed_trade)
+                # Cooldown tracking: set on SL, reset counter on successful exit
+                if exit_reason == "STOP_LOSS":
+                    portfolio["last_sl_time"]  = str(pd.Timestamp.now("UTC"))
+                    portfolio["last_sl_price"] = current_price
+                    portfolio["last_sl_bot"]   = _exiting_bot
+                    portfolio["consecutive_sl_count"] = portfolio.get("consecutive_sl_count", 0) + 1
+                    logger.info(
+                        f"COOLDOWN SET: bot={_exiting_bot} "
+                        f"consecutive_sl={portfolio['consecutive_sl_count']} "
+                        f"price={current_price:.0f}"
+                    )
+                else:
+                    portfolio["consecutive_sl_count"] = 0
+                atomic_write_json(portfolio, get_path("portfolio_state"))
 
             # Reload after potential state change
             portfolio = load_portfolio()
@@ -841,44 +937,58 @@ def run_cycle() -> dict:
                         completed_trade = _build_trade_record(portfolio, current_price, "bot2_timeout")
                         portfolio = execute_exit(current_price, portfolio, "bot2_timeout")
                         _save_completed_trade(completed_trade)
+                        portfolio["consecutive_sl_count"] = 0
+                        atomic_write_json(portfolio, get_path("portfolio_state"))
                         portfolio = load_portfolio()
                         logger.info(
                             f"BOT2 TIMEOUT: {hours_in_trade:.0f}h >= {max_hold_h}h | "
                             f"exit=${current_price:,.0f}"
                         )
 
-        # Bot 1: Reversal — scoring says ENTER → apply reversal filter
+        # Bot 1: Reversal — scoring says ENTER → check cooldown → apply reversal filter
+        cd_check: dict = {"can_enter": True, "reason": "not_evaluated"}
         if result["signal"] == "ENTER" and not portfolio["has_position"]:
-            rf_check = check_reversal_filter(technical, params)
-
-            if rf_check["passed"]:
-                atr_14 = technical.get("atr_14")
-                portfolio = execute_entry(current_price, portfolio, atr_14=atr_14)
-                _init_trade_tracking(portfolio, result, regime, technical, zscores)
-                portfolio["entry_ret_1d"] = rf_check["ret_1d"]
-                portfolio["entry_filter_passed"] = True
-                portfolio["entry_bot"] = "bot1"
-                atomic_write_json(portfolio, get_path("portfolio_state"))
-                bot_entered = "bot1"
-                logger.info(
-                    f"BOT1 ENTRY CONFIRMED: score={result.get('score', 0):.3f} | "
-                    f"RSI={rf_check['rsi']:.1f} (<{rf_check['rsi_max']}) | "
-                    f"ret_1d={rf_check['ret_1d']:.4f} (>{rf_check['ret_1d_min']})"
-                )
+            cd_check = check_cooldown(portfolio, current_price, "bot1", params)
+            if not cd_check["can_enter"]:
+                logger.info(f"BOT1 COOLDOWN ACTIVE: {cd_check['reason']}")
+                result["signal"] = "COOLDOWN"
+                result["cooldown_reason"] = cd_check["reason"]
             else:
-                logger.info(
-                    f"BOT1 ENTRY FILTERED: score={result.get('score', 0):.3f} | "
-                    f"RSI={rf_check['rsi']} | ret_1d={rf_check['ret_1d']} → "
-                    f"{rf_check['reason']}"
-                )
-                result["signal"] = "FILTERED"
-                result["filter_reason"] = rf_check["reason"]
-                result["filter_rsi"] = rf_check["rsi"]
-                result["filter_ret_1d"] = rf_check["ret_1d"]
+                rf_check = check_reversal_filter(technical, params)
+
+                if rf_check["passed"]:
+                    atr_14 = technical.get("atr_14")
+                    portfolio = execute_entry(current_price, portfolio, atr_14=atr_14)
+                    _init_trade_tracking(portfolio, result, regime, technical, zscores)
+                    portfolio["entry_ret_1d"] = rf_check["ret_1d"]
+                    portfolio["entry_filter_passed"] = True
+                    portfolio["entry_bot"] = "bot1"
+                    atomic_write_json(portfolio, get_path("portfolio_state"))
+                    bot_entered = "bot1"
+                    logger.info(
+                        f"BOT1 ENTRY CONFIRMED: score={result.get('score', 0):.3f} | "
+                        f"RSI={rf_check['rsi']:.1f} (<{rf_check['rsi_max']}) | "
+                        f"ret_1d={rf_check['ret_1d']:.4f} (>{rf_check['ret_1d_min']})"
+                    )
+                else:
+                    logger.info(
+                        f"BOT1 ENTRY FILTERED: score={result.get('score', 0):.3f} | "
+                        f"RSI={rf_check['rsi']} | ret_1d={rf_check['ret_1d']} → "
+                        f"{rf_check['reason']}"
+                    )
+                    result["signal"] = "FILTERED"
+                    result["filter_reason"] = rf_check["reason"]
+                    result["filter_rsi"] = rf_check["rsi"]
+                    result["filter_ret_1d"] = rf_check["ret_1d"]
 
         # Bot 2: Momentum — independent of gate scoring, runs if no position and not Bear
         if bot_entered is None and not portfolio["has_position"] and regime != "Bear":
-            mf_check = check_momentum_filter(technical, zscores, params)
+            cd_check_b2 = check_cooldown(portfolio, current_price, "bot2", params)
+            if not cd_check_b2["can_enter"]:
+                logger.info(f"BOT2 COOLDOWN ACTIVE: {cd_check_b2['reason']}")
+                mf_check = {"passed": False, "reason": cd_check_b2["reason"], "stablecoin_z": None}
+            else:
+                mf_check = check_momentum_filter(technical, zscores, params)
 
             if mf_check["passed"]:
                 mf_params = params.get("momentum_filter", {})
@@ -923,6 +1033,9 @@ def run_cycle() -> dict:
     portfolio["last_momentum_passed"] = result.get("signal") == "ENTER_BOT2"
     portfolio["last_momentum_reason"] = mf_check.get("reason")
     portfolio["last_momentum_stablecoin_z"] = zscores.get("stablecoin_z")
+    # Cooldown state — persisted every cycle for dashboard
+    portfolio["last_cooldown_can_enter"] = cd_check.get("can_enter")
+    portfolio["last_cooldown_reason"] = cd_check.get("reason")
     atomic_write_json(portfolio, get_path("portfolio_state"))
 
     # 12. Log cycle

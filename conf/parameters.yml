@@ -190,6 +190,14 @@ reversal_filter:
   ret_1d_min: -0.01         # 1d return must be ABOVE -1% (not a falling knife)
   rsi_extreme_override: 25  # RSI below this = extreme capitulation → ignores ret_1d_min (0 = disabled)
 
+  # Cooldown após stop loss — evita loop de reentrada
+  cooldown:
+    enabled: true
+    hours_after_sl: 12               # mínimo 12h após stop loss para reentrar
+    require_price_above_exit: true   # preço deve estar acima do preço de saída do SL
+    max_consecutive_sl: 3            # após 3 SLs consecutivos, pausa estendida
+    consecutive_sl_pause_hours: 24   # pausa de 24h após atingir max_consecutive_sl
+
 # ---------------------------------------------------------------------------
 # Momentum filter (Bot 2 — entry confirmation, independent of gate scoring)
 # ---------------------------------------------------------------------------
@@ -200,6 +208,14 @@ momentum_filter:
   rsi_min: 50                # RSI mínimo (zona bullish)
   bb_pct_max: 0.98           # BB% máximo (filtro anti blow-off top)
   require_above_ma21: true   # Preço deve estar acima da MA21
+
+  # Cooldown após stop loss — mesmo mecanismo do Bot 1
+  cooldown:
+    enabled: true
+    hours_after_sl: 12
+    require_price_above_exit: true
+    max_consecutive_sl: 3
+    consecutive_sl_pause_hours: 24
 
   # Anti-spike guard: bloqueia entrada tardia em rally já estendido
   # Se ret_1d > spike_ret_max E RSI > spike_rsi_max → LATE_SPIKE → não entra
