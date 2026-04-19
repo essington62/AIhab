@@ -1,0 +1,10 @@
+gate,corr_cfg,Jan,Feb,Mar,Apr,status,reason
+G4 OI,-0.472,0.08,0.177,-0.461,-0.137,UNSTABLE,Alta variância (0.147/0.214)
+G9 Taker,0.143,0.205,-0.002,-0.031,-0.078,UNSTABLE,Alta variância (0.078/0.079)
+G10 Funding,-0.064,-0.072,-0.082,-0.254,0.103,BROKEN,"Sinal invertido vs config (cfg=-0.064, atual=+0.103)"
+G3 DGS10,-0.315,-0.211,-0.449,-0.165,0.191,BROKEN,"Sinal invertido vs config (cfg=-0.315, atual=+0.191)"
+G3 Curve,-0.282,-0.389,-0.302,0.326,-0.239,BROKEN,2 inversões de sinal em 2026
+G5 Stablecoin,0.326,0.01,0.325,0.04,-0.06,UNSTABLE,Alta variância (0.126/0.109)
+G6 Bubble,-0.345,0.354,0.153,-0.505,-0.261,UNSTABLE,Alta variância (0.129/0.318)
+G7 ETF,0.263,0.159,0.175,0.003,-0.101,BROKEN,"Sinal invertido vs config (cfg=+0.263, atual=-0.101)"
+G8 F&G,-0.211,-0.182,-0.062,-0.392,0.09,UNSTABLE,Alta variância (0.129/0.181)

@@ -1,0 +1,6 @@
+,forward_ret_30d,forward_ret_30d,forward_dd_7d,forward_dd_7d,forward_vol_7d,forward_vol_7d,forward_ret_7d,forward_ret_7d,forward_ret_7d,forward_ret_7d
+,mean,std,mean,std,mean,std,mean,median,std,count
+regime_alignment,,,,,,,,,,
+STABLE,4.611,3.268,-4.771,1.412,6.714,2.398,-0.243,-1.069,3.616,18
+TRANSITION,-1.945,8.372,-7.168,6.193,8.153,4.961,-0.85,-0.535,7.223,54
+UNSTABLE,-25.603,1.91,-6.544,4.399,6.55,1.607,-4.57,-5.721,6.602,14

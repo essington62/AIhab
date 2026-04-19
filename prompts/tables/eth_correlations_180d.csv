@@ -1,0 +1,10 @@
+gate,zcol,source,corr_cfg,corr_1d,corr_3d,corr_7d,delta_3d,n,status
+G4 OI,oi_z,eth,-0.472,0.019,0.019,0.128,0.491,159,🔴 broken (inv)
+G10 Funding,funding_z,eth,-0.064,-0.127,0.02,0.107,0.084,159,✅ aligned (inv)
+G9 Taker,taker_z,eth,0.143,0.024,-0.007,-0.053,0.15,159,✅ aligned (inv)
+G5 Stablecoin,stablecoin_z,global,0.326,0.083,0.122,0.219,0.204,174,⚠️ attention
+G6 Bubble,bubble_z,global,-0.345,0.003,-0.011,-0.014,0.334,174,🔴 broken
+G7 ETF,etf_z,global,0.263,0.038,0.056,0.246,0.207,174,⚠️ attention
+G8 F&G,fg_z,global,-0.211,-0.101,-0.1,-0.086,0.111,174,✅ aligned
+G3 DGS10,dgs10_z,global,-0.315,-0.103,-0.159,-0.196,0.156,174,⚠️ attention
+G3 Curve,curve_z,global,-0.282,-0.03,-0.061,-0.014,0.221,174,⚠️ attention
