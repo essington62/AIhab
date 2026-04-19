@@ -245,3 +245,29 @@ dq:
 model_health:
   threshold_healthy: 0.15   # weighted avg delta < 0.15 → Saudável
   threshold_warning: 0.30   # weighted avg delta < 0.30 → Atenção (else → Desalinhado)
+
+# ---------------------------------------------------------------------------
+# Adaptive Weights — confidence weighting + kill switch graduado
+# Reduz impacto de gates desalinhados sem alterar pesos base
+# ---------------------------------------------------------------------------
+adaptive_weights:
+  enabled: true
+
+  # Confidence weighting (aplicado sempre)
+  confidence:
+    enabled: true
+    window_short: 30           # rolling 30d
+    window_long: 60            # rolling 60d (peso maior)
+    smooth_short: 0.3
+    smooth_long: 0.7
+    min_confidence: 0.0        # pode reduzir até zero
+
+  # Kill switch graduado (aplicado SOBRE o confidence weighting)
+  kill_switch:
+    enabled: true
+    severe_delta_threshold: 0.5      # delta >= 0.5 → weight *= 0.3
+    severe_multiplier: 0.3           # reduz para 30%
+    extreme_delta_threshold: 0.6     # delta >= 0.6 → weight = 0
+
+  # Fallback se não houver dados suficientes
+  min_days_for_confidence: 20

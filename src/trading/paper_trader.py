@@ -863,6 +863,20 @@ def run_cycle() -> dict:
     except Exception as e:
         logger.warning(f"spot_df load failed (MA200 override disabled): {e}")
 
+    # 7c. Daily data for adaptive weights (zs_daily + spot_daily)
+    zs_daily = None
+    spot_daily = None
+    try:
+        _zs_df = pd.read_parquet(get_path("gate_zscores"))
+        _zs_df["timestamp"] = pd.to_datetime(_zs_df["timestamp"], utc=True)
+        zs_daily = _zs_df.set_index("timestamp").resample("1D").last()
+
+        _spot_raw = pd.read_parquet(get_path("clean_spot_1h"))
+        _spot_raw["timestamp"] = pd.to_datetime(_spot_raw["timestamp"], utc=True)
+        spot_daily = _spot_raw.set_index("timestamp").resample("1D")["close"].last()
+    except Exception as e:
+        logger.warning(f"adaptive weights data load failed (using base weights): {e}")
+
     # 8. Gate Scoring (hardened)
     try:
         result = run_scoring_pipeline(
@@ -875,6 +889,8 @@ def run_cycle() -> dict:
             fed_context=fed_context,
             score_history=score_history,
             spot_df=spot_df,
+            zs_daily=zs_daily,
+            spot_daily=spot_daily,
         )
     except Exception as e:
         logger.error(f"Gate scoring failed: {e}", exc_info=True)
@@ -1040,6 +1056,9 @@ def run_cycle() -> dict:
     # Cooldown state — persisted every cycle for dashboard
     portfolio["last_cooldown_can_enter"] = cd_check.get("can_enter")
     portfolio["last_cooldown_reason"] = cd_check.get("reason")
+    # Adaptive weights state — persisted for dashboard
+    if result.get("adaptive_weights"):
+        portfolio["last_adaptive_weights"] = result["adaptive_weights"]
     atomic_write_json(portfolio, get_path("portfolio_state"))
 
     # 12. Log cycle

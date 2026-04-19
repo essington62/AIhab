@@ -1785,6 +1785,103 @@ def main():
                 unsafe_allow_html=True,
             )
 
+    # ── Adaptive Weights ───────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### ⚖️ Adaptive Weights")
+    st.caption("Pesos efetivos: confidence weighting + kill switch graduado (G3–G10 only)")
+
+    _aw_cfg = _params.get("adaptive_weights", {})
+    _adaptive_details = portfolio.get("last_adaptive_weights", {})
+
+    if not _aw_cfg.get("enabled", False):
+        st.info("Adaptive weights desabilitado — usando pesos base do parameters.yml")
+    elif not _adaptive_details:
+        st.caption("Adaptive weights não computados ainda (aguardando próximo ciclo)")
+    else:
+        _n_ok      = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "ok" and d.get("confidence", 0) > 0.8)
+        _n_reduced = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "ok" and d.get("confidence", 0) <= 0.8)
+        _n_severe  = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "severe")
+        _n_extreme = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "extreme")
+        _mean_conf = float(np.mean([d.get("confidence", 0) for d in _adaptive_details.values()])) if _adaptive_details else 0.0
+
+        aw_c1, aw_c2, aw_c3, aw_c4, aw_c5 = st.columns(5)
+        with aw_c1:
+            _conf_color = "#3fb950" if _mean_conf > 0.7 else "#d29922" if _mean_conf > 0.4 else "#f85149"
+            st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">MEAN CONFIDENCE</div>
+  <div class="cg-card-value" style="color:{_conf_color};">{_mean_conf:.2f}</div>
+</div>""", unsafe_allow_html=True)
+        with aw_c2:
+            st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">✅ OK</div>
+  <div class="cg-card-value pos">{_n_ok}</div>
+  <div class="cg-card-sub">conf &gt; 0.8</div>
+</div>""", unsafe_allow_html=True)
+        with aw_c3:
+            st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">🟡 REDUCED</div>
+  <div class="cg-card-value warn">{_n_reduced}</div>
+  <div class="cg-card-sub">conf ≤ 0.8</div>
+</div>""", unsafe_allow_html=True)
+        with aw_c4:
+            st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">⚠️ SEVERE</div>
+  <div class="cg-card-value" style="color:#d29922;">{_n_severe}</div>
+  <div class="cg-card-sub">weight × 0.3</div>
+</div>""", unsafe_allow_html=True)
+        with aw_c5:
+            st.markdown(f"""
+<div class="cg-card" style="text-align:center;">
+  <div class="cg-card-title">⛔ EXTREME</div>
+  <div class="cg-card-value neg">{_n_extreme}</div>
+  <div class="cg-card-sub">weight = 0</div>
+</div>""", unsafe_allow_html=True)
+
+        st.markdown("**Detalhe por Gate:**")
+        _sorted_aw = sorted(
+            _adaptive_details.items(),
+            key=lambda x: x[1].get("delta") or 0,
+            reverse=True,
+        )
+        for _gkey, _d in _sorted_aw:
+            _aw_name   = _d.get("gate", _gkey)
+            _aw_base   = _d.get("base_weight", 0)
+            _aw_eff    = _d.get("effective_weight", 0)
+            _aw_conf   = _d.get("confidence", 0)
+            _aw_status = _d.get("kill_status", "ok")
+            _aw_delta  = _d.get("delta")
+            _aw_ccfg   = _d.get("corr_cfg")
+            _aw_clong  = _d.get("corr_long")
+
+            if _aw_status == "extreme":
+                _aw_icon, _aw_color = "⛔", "#f85149"
+            elif _aw_status == "severe":
+                _aw_icon, _aw_color = "⚠️", "#d29922"
+            elif _aw_conf < 0.5:
+                _aw_icon, _aw_color = "🟡", "#d29922"
+            elif _aw_conf > 0.8:
+                _aw_icon, _aw_color = "✅", "#3fb950"
+            else:
+                _aw_icon, _aw_color = "🟡", "#d29922"
+
+            _aw_delta_s = f"{_aw_delta:.3f}" if _aw_delta is not None else "—"
+            _aw_creal_s = f"{_aw_clong:+.3f}" if _aw_clong is not None else "—"
+            _aw_ccfg_s  = f"{_aw_ccfg:+.3f}" if _aw_ccfg is not None else "—"
+
+            st.markdown(f"""
+<div class="cg-card" style="padding:6px 14px; font-size:12px; margin-bottom:3px; border-left:3px solid {_aw_color};">
+  {_aw_icon} <b>{_aw_name}</b>
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Base:</span> {_aw_base:.2f}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Eff:</span> <b>{_aw_eff:.2f}</b>
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Conf:</span> {_aw_conf:.2f}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Δ:</span> {_aw_delta_s}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">cfg/real:</span> {_aw_ccfg_s} / {_aw_creal_s}
+</div>""", unsafe_allow_html=True)
+
     # =========================================================================
     # SECTION 8: PAPER TRADING
     # =========================================================================

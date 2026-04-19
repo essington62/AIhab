@@ -171,8 +171,9 @@ def evaluate_g2(news_crypto_score: float, fed_sentiment: dict) -> dict:
 # G3 — Macro rates (DGS10, DGS2, curve, RRP)
 # ---------------------------------------------------------------------------
 
-def evaluate_g3(zscores: dict) -> float:
+def evaluate_g3(zscores: dict, effective_weights: Optional[dict] = None) -> float:
     params = get_params()["gate_params"]
+    eff = effective_weights or {}
     g3 = 0.0
     for key, z_col in [
         ("g3_dgs10", "dgs10_z"),
@@ -182,6 +183,7 @@ def evaluate_g3(zscores: dict) -> float:
     ]:
         if key in params:
             corr, sens, max_s = params[key]
+            max_s = eff.get(key, max_s)
             g3 += gate_score_continuous(zscores.get(z_col, np.nan), corr, sens, max_s)
     return g3
 
@@ -190,7 +192,7 @@ def evaluate_g3(zscores: dict) -> float:
 # G4 — Open Interest
 # ---------------------------------------------------------------------------
 
-def evaluate_g4(zscores: dict, stale_days: dict) -> float:
+def evaluate_g4(zscores: dict, stale_days: dict, effective_weights: Optional[dict] = None) -> float:
     params = get_params()
     gp = params["gate_params"]
     stale_tol = params["stale_tolerance_days"]
@@ -200,6 +202,7 @@ def evaluate_g4(zscores: dict, stale_days: dict) -> float:
         return 0.0
 
     corr, sens, max_s = gp["g4_oi"]
+    max_s = (effective_weights or {}).get("g4_oi", max_s)
     return gate_score_continuous(zscores.get("oi_z", np.nan), corr, sens, max_s)
 
 
@@ -214,45 +217,51 @@ def _stale_gate(gate_key: str, stale_days: dict) -> bool:
     return days > limit
 
 
-def evaluate_g5(zscores: dict, stale_days: dict) -> float:
+def evaluate_g5(zscores: dict, stale_days: dict, effective_weights: Optional[dict] = None) -> float:
     if _stale_gate("g5_stablecoin", stale_days):
         return 0.0
     corr, sens, max_s = get_params()["gate_params"]["g5_stable"]
+    max_s = (effective_weights or {}).get("g5_stable", max_s)
     return gate_score_continuous(zscores.get("stablecoin_z", np.nan), corr, sens, max_s)
 
 
-def evaluate_g6(zscores: dict, stale_days: dict) -> float:
+def evaluate_g6(zscores: dict, stale_days: dict, effective_weights: Optional[dict] = None) -> float:
     if _stale_gate("g6_bubble", stale_days):
         return 0.0
     corr, sens, max_s = get_params()["gate_params"]["g6_bubble"]
+    max_s = (effective_weights or {}).get("g6_bubble", max_s)
     return gate_score_continuous(zscores.get("bubble_z", np.nan), corr, sens, max_s)
 
 
-def evaluate_g7(zscores: dict, stale_days: dict) -> float:
+def evaluate_g7(zscores: dict, stale_days: dict, effective_weights: Optional[dict] = None) -> float:
     if _stale_gate("g7_etf", stale_days):
         return 0.0
     corr, sens, max_s = get_params()["gate_params"]["g7_etf"]
+    max_s = (effective_weights or {}).get("g7_etf", max_s)
     return gate_score_continuous(zscores.get("etf_z", np.nan), corr, sens, max_s)
 
 
-def evaluate_g8(zscores: dict, stale_days: dict) -> float:
+def evaluate_g8(zscores: dict, stale_days: dict, effective_weights: Optional[dict] = None) -> float:
     if _stale_gate("g8_fg", stale_days):
         return 0.0
     corr, sens, max_s = get_params()["gate_params"]["g8_fg"]
+    max_s = (effective_weights or {}).get("g8_fg", max_s)
     return gate_score_continuous(zscores.get("fg_z", np.nan), corr, sens, max_s)
 
 
-def evaluate_g9(zscores: dict, stale_days: dict) -> float:
+def evaluate_g9(zscores: dict, stale_days: dict, effective_weights: Optional[dict] = None) -> float:
     if _stale_gate("g9_taker", stale_days):
         return 0.0
     corr, sens, max_s = get_params()["gate_params"]["g9_taker"]
+    max_s = (effective_weights or {}).get("g9_taker", max_s)
     return gate_score_continuous(zscores.get("taker_z", np.nan), corr, sens, max_s)
 
 
-def evaluate_g10(zscores: dict, stale_days: dict) -> float:
+def evaluate_g10(zscores: dict, stale_days: dict, effective_weights: Optional[dict] = None) -> float:
     if _stale_gate("g10_funding", stale_days):
         return 0.0
     corr, sens, max_s = get_params()["gate_params"]["g10_funding"]
+    max_s = (effective_weights or {}).get("g10_funding", max_s)
     return gate_score_continuous(zscores.get("funding_z", np.nan), corr, sens, max_s)
 
 
@@ -347,6 +356,8 @@ def run_scoring_pipeline(
     fed_context: dict,
     score_history: list[float],
     spot_df: Optional[pd.DataFrame] = None,
+    zs_daily: Optional[pd.DataFrame] = None,
+    spot_daily: Optional[pd.Series] = None,
 ) -> dict:
     """
     Full pipeline: gates → clusters → threshold → kill switches → decision.
@@ -361,6 +372,24 @@ def run_scoring_pipeline(
       proximity_adj: float
       ma200_override: dict
     """
+    # Adaptive weights — confidence weighting + kill switch graduado (G3–G10)
+    adaptive_details: dict = {}
+    effective_weights: Optional[dict] = None
+    try:
+        from src.models.adaptive_weights import compute_adaptive_weights
+        params = get_params()
+        if zs_daily is not None and spot_daily is not None and not zs_daily.empty:
+            adaptive = compute_adaptive_weights(zs_daily, spot_daily, params)
+            effective_weights = adaptive["weights"]
+            adaptive_details = adaptive["details"]
+            logger.info(
+                f"Adaptive weights: mean_conf={adaptive['summary']['mean_confidence']:.3f} "
+                f"ok={adaptive['summary']['n_ok']} reduced={adaptive['summary']['n_reduced']} "
+                f"severe={adaptive['summary']['n_severe']} extreme={adaptive['summary']['n_extreme']}"
+            )
+    except Exception as e:
+        logger.warning(f"Adaptive weights failed (using base weights): {e}")
+
     # MA200 override: bypass slow R5C in sustained downtrends
     ma200 = {}
     if spot_df is not None and len(spot_df) >= 100:
@@ -388,6 +417,7 @@ def run_scoring_pipeline(
             "clusters": {},
             "proximity_adj": fed_context.get("proximity_adjustment", 0.0),
             "ma200_override": ma200,
+            "adaptive_weights": adaptive_details,
         }
 
     # G1
@@ -396,18 +426,19 @@ def run_scoring_pipeline(
     # G2
     g2_result = evaluate_g2(news_crypto_score, fed_context)
 
-    # G3–G10
+    # G3–G10 (with effective_weights from adaptive module when available)
+    ew = effective_weights
     gates = {
         "g1":  g1_result["g1"],
         "g2":  g2_result["g2"],
-        "g3":  evaluate_g3(zscores),
-        "g4":  evaluate_g4(zscores, stale_days),
-        "g5":  evaluate_g5(zscores, stale_days),
-        "g6":  evaluate_g6(zscores, stale_days),
-        "g7":  evaluate_g7(zscores, stale_days),
-        "g8":  evaluate_g8(zscores, stale_days),
-        "g9":  evaluate_g9(zscores, stale_days),
-        "g10": evaluate_g10(zscores, stale_days),
+        "g3":  evaluate_g3(zscores, ew),
+        "g4":  evaluate_g4(zscores, stale_days, ew),
+        "g5":  evaluate_g5(zscores, stale_days, ew),
+        "g6":  evaluate_g6(zscores, stale_days, ew),
+        "g7":  evaluate_g7(zscores, stale_days, ew),
+        "g8":  evaluate_g8(zscores, stale_days, ew),
+        "g9":  evaluate_g9(zscores, stale_days, ew),
+        "g10": evaluate_g10(zscores, stale_days, ew),
     }
 
     # Stale data block: >50% of CoinGlass gates stale
@@ -425,6 +456,7 @@ def run_scoring_pipeline(
             "clusters": {},
             "proximity_adj": fed_context.get("proximity_adjustment", 0.0),
             "ma200_override": ma200,
+            "adaptive_weights": adaptive_details,
         }
 
     # Cluster aggregation
@@ -486,4 +518,5 @@ def run_scoring_pipeline(
         "clusters": cluster_result["clusters"],
         "proximity_adj": prox_adj,
         "ma200_override": ma200,
+        "adaptive_weights": adaptive_details,
     }
