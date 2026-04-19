@@ -3,8 +3,8 @@ services:
     build: .
     container_name: aihab-app
     volumes:
-      - aihab-data:/app/data
-      - aihab-logs:/app/logs
+      - ./data:/app/data
+      - ./logs:/app/logs
       - ./conf/credentials.yml:/app/conf/credentials.yml:ro
     environment:
       - TZ=UTC
@@ -26,8 +26,8 @@ services:
     ports:
       - "8501:8501"
     volumes:
-      - aihab-data:/app/data:ro
-      - aihab-logs:/app/logs:ro
+      - ./data:/app/data:ro
+      - ./logs:/app/logs:ro
       - ./conf/credentials.yml:/app/conf/credentials.yml:ro
     environment:
       - TZ=UTC
@@ -41,7 +41,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 20s
-
-volumes:
-  aihab-data:
-  aihab-logs:
