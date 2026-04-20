@@ -136,8 +136,12 @@ Se close < MA200 e slope negativo por 5+ dias → força Bear (bypass R5C lento)
 ```
 btc_AI/
 ├── conf/                          # Configuração (zero hardcode)
+│   ├── parameters.yml             # Gates, stops, capital_management, momentum_filter_v2
+│   └── credentials.yml            # API keys (gitignored)
 ├── data/                          # gitignored, volumes Docker
 │   ├── 01_raw/                    # Dados brutos das APIs
+│   │   ├── spot/                  # btc_1h, eth_1h
+│   │   └── futures/               # oi, funding, taker, ls_account, ls_position (BTC+ETH)
 │   ├── 02_intermediate/           # Clean: resampled, ffilled
 │   ├── 02_features/               # Z-scores, news_scores
 │   ├── 03_models/                 # R5C HMM pickle
@@ -145,15 +149,35 @@ btc_AI/
 │   └── 05_output/                 # Portfolio, trades
 ├── src/
 │   ├── config.py                  # Loader centralizado
-│   ├── data/                      # Ingestão (9 módulos)
+│   ├── data/                      # Ingestão (10 módulos)
+│   │   ├── binance_spot.py        # Spot 1h/1d — multi-symbol
+│   │   ├── binance_ls.py          # L/S top accounts/positions — multi-symbol
+│   │   ├── coinglass_futures.py   # OI/Funding/Taker 4h — multi-symbol
+│   │   ├── coinglass_ls.py        # L/S bootstrap via CoinGlass (one-shot)
+│   │   └── utils.py               # fetch_with_retry, dedup_by_timestamp, save_with_window
 │   ├── features/                  # Technical, gate_features, fed_sentinel
 │   ├── models/                    # r5c_hmm, gate_scoring
-│   ├── trading/                   # paper_trader, execution
+│   ├── trading/
+│   │   ├── paper_trader.py        # run_cycle, check_momentum_filter, check_momentum_filter_v2
+│   │   ├── capital_manager.py     # Multi-bucket portfolio (btc_bot1 + btc_bot2)
+│   │   └── execution.py
 │   └── dashboard/                 # Streamlit app (9 seções)
-├── scripts/                       # hourly_cycle.sh, daily_update.sh
+├── scripts/
+│   ├── hourly_cycle.sh / daily_update.sh
+│   ├── bootstrap_eth_history.py   # One-shot ETH data bootstrap
+│   ├── bootstrap_ls_coinglass.py  # L/S bootstrap via CoinGlass API
+│   ├── check_eth_data_coverage.py # Verificar cobertura de dados ETH+BTC
+│   ├── eth_phase0_statistical_study.py  # Análise descritiva ETH (gates vs forward returns)
+│   ├── backtest_bot2_v2.py        # Backtest estrutural Bot 2 early reversal
+│   └── migrate_portfolio_to_multibucket.py
+├── prompts/                       # Relatórios de análise e backtest
+│   ├── eth_phase0_report.md
+│   ├── bot2_v2_backtest_report.md
+│   ├── plots/                     # Heatmaps, equity curves
+│   └── tables/                    # CSVs de correlação e trades
 ├── docker/                        # environment_docker.txt, crontab
 ├── Dockerfile, docker-compose.yml
-├── tests/                         # 69 testes
+├── tests/                         # 316 testes
 └── CLAUDE.md
 ```
 
@@ -174,9 +198,80 @@ btc_AI/
 Rolling 30d correlação vs retorno 3d forward. Compara com parameters.yml.
 ✅ Δ<0.15 | ⚠️ Δ>0.15 | 🔴 Δ>0.25
 
+## Multi-Symbol (ETH — Fase -1 → 0)
+
+### Naming convention (multi-symbol)
+
+BTC mantém paths legados sem prefixo. Outros símbolos ganham prefixo:
+- BTC: `ls_account_1h.parquet`, `oi_4h.parquet`
+- ETH: `eth_ls_account_1h.parquet`, `eth_oi_4h.parquet`
+
+### Dados ETH disponíveis (2026-04-20)
+
+| Dataset | Rows | Período |
+|---------|------|---------|
+| Spot 1h | 8760 | 365d |
+| OI/Funding/Taker 4h | 1080 | 180d |
+| L/S Account/Position 1h | 500 | 28d (cron acumula) |
+
+### L/S híbrido (Binance + CoinGlass)
+
+Binance retém apenas ~30 dias de L/S. Bootstrap via CoinGlass (one-shot, usa quota).
+`binance_ls.py` clamps startTime a 28d automaticamente para evitar HTTP 400.
+`dedup_by_timestamp` garante que Binance (novo) vence CoinGlass (antigo) em overlap.
+
+### ETH Phase 0 — Resultados (2026-04-20)
+
+**Model Alignment 28d: 0.664 | 180d: 0.782** → zona "adaptive layer suficiente"
+
+| Gate | 180d ETH corr_3d | Config BTC | Status |
+|------|-----------------|------------|--------|
+| G4 OI | +0.019 | -0.472 | 🔴 broken (instável) |
+| G10 Funding | +0.020 | -0.064 | ✅ aligned |
+| G9 Taker | -0.007 | +0.143 | ✅ aligned |
+| G8 F&G | -0.100 | -0.211 | ✅ aligned |
+| G3 DGS10 | -0.159 | -0.315 | ⚠️ attention |
+| G5 Stablecoin | +0.122 | +0.326 | ⚠️ attention |
+| G7 ETF | +0.056 | +0.263 | ⚠️ attention |
+| G3 Curve | -0.061 | -0.282 | ⚠️ attention |
+| G6 Bubble | -0.011 | -0.345 | 🔴 broken |
+
+**Próximo passo ETH:** `conf/parameters_eth.yml` com ajuste dos gates ⚠️/🔴.
+
+## Capital Manager (Multi-Bucket)
+
+`src/trading/capital_manager.py` — dois buckets independentes (btc_bot1 + btc_bot2, 50/50).
+- `capital_management.enabled: false` por default (ativar após migração)
+- Migração: `python scripts/migrate_portfolio_to_multibucket.py`
+- Safety gates: max_drawdown 15%, max_daily_loss 5%, pause mechanics
+
+## Bot 2 v2 — Early Reversal (Backtest)
+
+`check_momentum_filter_v2` em paper_trader.py — duas cláusulas OR:
+- **Classic:** ret_1d > 0, RSI > 50, close > MA21 (igual original)
+- **Early:** ret_1d > -1.5%, trend_improving 3h, delta_ret_3h > 0.5%, RSI > 35
+
+**Veredicto backtest (2026-01-08 → 2026-04-20): ❌ REJEITADO**
+
+| Métrica | Baseline | V2 |
+|---------|----------|-----|
+| Trades | 53 | 79 |
+| WR | 34.0% | 36.7% |
+| Profit Factor | 1.87 | 1.57 |
+| MaxDD | -4.43% | -5.37% |
+| Early Advantage | — | 0.05% (threshold: 0.3%) |
+
+Early entries (n=16): WR 50% mas PF 0.79 — losses maiores que wins.
+`momentum_filter_v2.enabled: false` — código mantido para referência.
+
 ## Roadmap
 
-### Curto prazo
+### ETH (Fase 1 — próximo)
+- `conf/parameters_eth.yml` com corr_cfg recalibrados para ETH
+- Paper trading ETH (quando alignment > 0.4 confirmado)
+- Deploy EC2: `git pull` + `bootstrap_eth_history.py`
+
+### BTC (curto prazo)
 - Rotina diária de recalibração (correlações rolling vs config)
 - Elastic IP na EC2
 - Acumular paper trading data
