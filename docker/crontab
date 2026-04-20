@@ -11,3 +11,8 @@ SHELL=/bin/bash
 
 # Daily update (07:00 UTC)
 0 7 * * * /app/scripts/daily_update.sh
+
+# ETH Bot 3 — ingestão spot + ciclo + stops (offset do BTC para não conflitar)
+2 * * * * cd /app && python3 -m src.data.eth_ingestion >> /app/logs/eth_ingestion.log 2>&1
+10 * * * * cd /app && python3 scripts/eth_hourly_cycle.py >> /app/logs/eth_bot3.log 2>&1
+25,40,55 * * * * cd /app && python3 scripts/eth_check_stops.py >> /app/logs/eth_stops.log 2>&1

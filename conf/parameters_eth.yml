@@ -1,0 +1,41 @@
+# ETH Bot 3 — Volume-based strategy
+# Baseline: Phase 0.5 v2 (2026 only) findings
+
+execution:
+  symbol: "ETHUSDT"
+  initial_capital_usd: 10000
+  position_size_pct: 1.0  # 100% do capital por trade
+
+  # Stops derivados do backtest 2026
+  stop_loss_pct: 0.02       # -2%
+  take_profit_pct: 0.04     # +4% (R:R 1:2)
+  trailing_stop_pct: 0.015  # 1.5%
+  max_hold_hours: 168       # 7 dias (regime de volume)
+
+# BLOCK rule (mais importante)
+block_rules:
+  enabled: true
+  volume_z_block: 1.5  # Se volume_z > 1.5 → NUNCA entra
+  # Validação: fwd_7d = -9% em 75% dos casos quando volume_z > 1.5
+
+# Entry rule (simples, volume-only)
+entry_rule:
+  enabled: true
+
+  # Janela de volume Q2 (validada em 2026)
+  volume_z_min: -0.75
+  volume_z_max: -0.30
+
+  # Filtros adicionais (sanidade)
+  rsi_max: 60             # não entra em overbought extremo
+  price_above_ma200: true # só opera em uptrend estrutural
+
+# Z-score windows (alinhado com descoberta: 90d melhor que 180d)
+zscore:
+  volume_window: 30   # rolling para z-score
+  min_history: 60     # mínimo para começar a operar
+
+# Monitoring (check_stops)
+check_stops:
+  interval_minutes: 15
+  use_live_price: true  # mesma lógica do BTC após o fix
