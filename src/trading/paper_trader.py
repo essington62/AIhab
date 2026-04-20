@@ -643,6 +643,98 @@ def check_momentum_filter(technical: dict, zscores: dict, params: dict) -> dict:
     return result
 
 
+def check_momentum_filter_v2(technical: dict, zscores: dict, params: dict) -> dict:
+    """
+    Bot 2 v2 — Momentum with Early Reversal.
+
+    Two clauses (entry if EITHER passes):
+      CLASSIC:  ret_1d > 0, RSI > 50, close > MA21
+      EARLY:    ret_1d > -1.5%, trend_improving (3h), delta_ret_3h > 0.5%, RSI > 35
+
+    Global filters always apply: stablecoin_z > sz_min, BB% < bb_max.
+    """
+    mf = params.get("momentum_filter_v2", {})
+
+    if not mf.get("enabled", False):
+        return {"passed": False, "reason": "v2_disabled", "entry_mode": None}
+
+    stablecoin_z = zscores.get("stablecoin_z")
+    ret_1d = technical.get("ret_1d")
+    ret_1d_1h = technical.get("ret_1d_1h_ago")
+    ret_1d_3h = technical.get("ret_1d_3h_ago")
+    rsi = technical.get("rsi_14")
+    bb_pct = technical.get("bb_pct")
+    close = technical.get("close")
+    ma_21 = technical.get("ma_21")
+
+    sz_min = mf.get("stablecoin_z_min", 1.3)
+    bb_max = mf.get("bb_pct_max", 0.98)
+    classic_cfg = mf.get("classic", {})
+    early_cfg = mf.get("early_reversal", {})
+
+    result = {
+        "stablecoin_z": stablecoin_z,
+        "ret_1d": ret_1d,
+        "rsi": rsi,
+        "bb_pct": bb_pct,
+        "close": close,
+        "ma_21": ma_21,
+        "classic_pass": False,
+        "early_pass": False,
+        "entry_mode": None,
+    }
+
+    if any(v is None for v in [stablecoin_z, ret_1d, rsi, bb_pct, close, ma_21]):
+        result["passed"] = False
+        result["reason"] = "MISSING_DATA"
+        return result
+
+    if stablecoin_z <= sz_min:
+        result["passed"] = False
+        result["reason"] = f"LOW_LIQUIDITY (sz={stablecoin_z:.2f})"
+        return result
+
+    if bb_pct >= bb_max:
+        result["passed"] = False
+        result["reason"] = f"BLOW_OFF_TOP (bb={bb_pct:.3f})"
+        return result
+
+    classic_pass = (
+        ret_1d > classic_cfg.get("ret_1d_min", 0.0)
+        and rsi > classic_cfg.get("rsi_min", 50)
+        and close > ma_21
+    )
+    result["classic_pass"] = classic_pass
+
+    early_pass = False
+    if early_cfg.get("enabled", True) and ret_1d_1h is not None and ret_1d_3h is not None:
+        trend_improving = (ret_1d > ret_1d_1h) and (ret_1d_1h > ret_1d_3h)
+        delta_3h = ret_1d - ret_1d_3h
+        early_pass = (
+            ret_1d > early_cfg.get("ret_1d_floor", -0.015)
+            and trend_improving
+            and delta_3h > early_cfg.get("delta_ret_3h_min", 0.005)
+            and rsi > early_cfg.get("rsi_floor", 35)
+        )
+        result["early_pass"] = early_pass
+        result["trend_improving"] = trend_improving
+        result["delta_3h"] = round(delta_3h, 4)
+
+    if classic_pass:
+        result["passed"] = True
+        result["reason"] = "classic"
+        result["entry_mode"] = "classic"
+    elif early_pass:
+        result["passed"] = True
+        result["reason"] = "early_reversal"
+        result["entry_mode"] = "early"
+    else:
+        result["passed"] = False
+        result["reason"] = "no_trigger"
+
+    return result
+
+
 def check_reversal_filter(technical: dict, params: dict) -> dict:
     """
     Verify reversal conditions before executing an entry.

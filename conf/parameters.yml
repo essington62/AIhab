@@ -233,6 +233,24 @@ momentum_filter:
   max_hold_hours: 120        # Max 5 dias (120 horas)
 
 # ---------------------------------------------------------------------------
+# Bot 2 v2 — Momentum com Early Reversal (disabled — backtest only)
+# ---------------------------------------------------------------------------
+momentum_filter_v2:
+  enabled: false            # NUNCA ativar em prod sem backtest aprovado
+  stablecoin_z_min: 1.3
+  bb_pct_max: 0.98
+
+  classic:
+    rsi_min: 50
+    ret_1d_min: 0.0
+
+  early_reversal:
+    enabled: true
+    ret_1d_floor: -0.015    # -1.5% — não entrar em free fall
+    rsi_floor: 35           # piso de oversold
+    delta_ret_3h_min: 0.005 # melhoria mínima de 0.5% em 3h
+
+# ---------------------------------------------------------------------------
 # Data quality
 # ---------------------------------------------------------------------------
 dq:
