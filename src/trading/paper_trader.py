@@ -835,10 +835,20 @@ def check_stops_only() -> dict:
         return {"action": "no_position"}
 
     try:
-        technical = get_latest_technical()
-        current_price = technical.get("close")
-        if current_price is None:
-            raise ValueError("close price is None")
+        # Prefer live price (Binance REST) for sub-candle resolution.
+        # Fallback to last candle close if API is unavailable.
+        from src.features.technical import get_live_price
+        live_price = get_live_price("BTCUSDT")
+        if live_price is not None:
+            current_price = live_price
+            price_source = "live_api"
+        else:
+            technical = get_latest_technical()
+            current_price = technical.get("close")
+            if current_price is None:
+                raise ValueError("close price is None (live API and parquet both failed)")
+            price_source = "candle_close_fallback"
+        logger.info(f"[STOPS-15m] price=${current_price:,.2f} (source={price_source})")
     except Exception as e:
         logger.warning(f"[STOPS-15m] WARN: could not fetch price, skipping cycle: {e}")
         return {"action": "error", "error": str(e)}

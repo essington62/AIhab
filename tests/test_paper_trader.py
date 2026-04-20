@@ -408,7 +408,7 @@ class TestCheckStopsOnly:
         portfolio = self._open_portfolio(70000.0)
         with (
             patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
-            patch("src.trading.paper_trader.get_latest_technical", return_value={"close": 70500.0}),
+            patch("src.features.technical.get_live_price", return_value=70500.0),
             patch("src.trading.paper_trader._update_excursions"),
             patch("src.trading.paper_trader.check_stops", return_value=(False, "")),
             patch("src.trading.execution.get_path", return_value=tmp_path / "portfolio_state.json"),
@@ -488,7 +488,7 @@ class TestCheckStopsOnly:
         mock_update = MagicMock()
         with (
             patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
-            patch("src.trading.paper_trader.get_latest_technical", return_value={"close": 70500.0}),
+            patch("src.features.technical.get_live_price", return_value=70500.0),
             patch("src.trading.paper_trader._update_excursions", mock_update),
             patch("src.trading.paper_trader.check_stops", return_value=(False, "")),
         ):
@@ -498,9 +498,11 @@ class TestCheckStopsOnly:
         assert args[1] == 70500.0  # current_price passed correctly
 
     def test_check_stops_api_error(self):
+        """Live API fails AND parquet raises → error returned."""
         portfolio = self._open_portfolio(70000.0)
         with (
             patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.features.technical.get_live_price", return_value=None),
             patch("src.trading.paper_trader.get_latest_technical", side_effect=Exception("timeout")),
         ):
             result = check_stops_only()
@@ -508,9 +510,11 @@ class TestCheckStopsOnly:
         assert "timeout" in result["error"]
 
     def test_check_stops_close_none_is_error(self):
+        """Live API fails AND parquet returns close=None → error returned."""
         portfolio = self._open_portfolio(70000.0)
         with (
             patch("src.trading.paper_trader.load_portfolio", return_value=portfolio),
+            patch("src.features.technical.get_live_price", return_value=None),
             patch("src.trading.paper_trader.get_latest_technical", return_value={"close": None}),
         ):
             result = check_stops_only()

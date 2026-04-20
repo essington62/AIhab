@@ -102,6 +102,30 @@ def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Live price (sub-candle resolution for stop checks)
+# ---------------------------------------------------------------------------
+
+def get_live_price(symbol: str = "BTCUSDT", timeout: float = 5.0):
+    """
+    Fetch current price from Binance public REST API (no auth required).
+    Used by check_stops_only() to get sub-candle resolution (15min checks).
+
+    Returns float or None on failure.
+    """
+    import requests
+    try:
+        r = requests.get(
+            "https://api.binance.com/api/v3/ticker/price",
+            params={"symbol": symbol},
+            timeout=timeout,
+        )
+        r.raise_for_status()
+        return float(r.json()["price"])
+    except Exception as e:
+        logger.warning(f"get_live_price({symbol}) failed: {e}")
+        return None
+
+
 # Latest-value extraction (used by paper_trader each cycle)
 # ---------------------------------------------------------------------------
 
