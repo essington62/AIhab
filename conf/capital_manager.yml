@@ -1,0 +1,44 @@
+# CapitalManager — gestão multi-asset (agregador de topo)
+# Lê portfolio.json + portfolio_eth.json, produz capital_manager.json
+# NÃO modifica os portfolios legados — zero breaking changes
+
+capital_manager:
+  enabled: true
+
+  buckets:
+    btc:
+      asset: "BTCUSDT"
+      initial_capital_usd: 10000
+      max_concurrent_positions: 1
+      bots_allowed:
+        - "bot_1_reversal"
+        - "bot_2_momentum"
+      legacy_portfolio_path: "data/04_scoring/portfolio.json"
+      enabled: true
+
+    eth:
+      asset: "ETHUSDT"
+      initial_capital_usd: 10000
+      max_concurrent_positions: 1
+      bots_allowed:
+        - "bot_3_volume"
+      legacy_portfolio_path: "data/04_scoring/portfolio_eth.json"
+      enabled: true
+
+  # Regras globais (aplicam a todos os buckets)
+  global_rules:
+    enabled: false  # desativado — só observação por ora
+
+    global_kill_switch:
+      enabled: false
+      max_drawdown_pct: -0.15  # -15%
+
+    max_total_exposure_pct: 1.0  # 100% = todos os buckets podem estar posicionados
+
+  # Estado centralizado
+  state_path: "data/04_scoring/capital_manager.json"
+
+  # Atualização
+  sync_mode: "lazy"  # lazy = on-demand; scheduled = via cron
+
+  log_level: "INFO"

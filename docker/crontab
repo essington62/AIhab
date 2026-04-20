@@ -12,6 +12,9 @@ SHELL=/bin/bash
 # Daily update (07:00 UTC)
 0 7 * * * /app/scripts/daily_update.sh
 
+# Capital Manager snapshot — persiste capital_manager.json a cada 5 minutos
+*/5 * * * * cd /app && python3 scripts/capital_snapshot.py --save >> /app/logs/capital_manager.log 2>&1
+
 # ETH Bot 3 — ingestão spot + ciclo + stops (offset do BTC para não conflitar)
 2 * * * * cd /app && python3 -m src.data.eth_ingestion >> /app/logs/eth_ingestion.log 2>&1
 10 * * * * cd /app && python3 scripts/eth_hourly_cycle.py >> /app/logs/eth_bot3.log 2>&1
