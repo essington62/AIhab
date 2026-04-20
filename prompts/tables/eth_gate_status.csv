@@ -1,0 +1,10 @@
+gate,btc_corr,eth_corr,diff,abs_eth,status,action,significant
+g4_oi_coin_margin,-0.472,0.1676434316967914,0.6396434316967914,0.1676434316967914,MODERATE,keep_reduced_weight,True
+g5_stablecoin,0.326,,,,NO_DATA,skip,False
+g7_etf,0.263,,,,NO_DATA,skip,False
+g6_bubble,-0.345,,,,NO_DATA,skip,False
+g3_dgs10,-0.315,,,,NO_DATA,skip,False
+g3_curve,-0.28,,,,NO_DATA,skip,False
+g9_taker,0.06,-0.005435918306287556,0.06543591830628756,0.005435918306287556,WEAK,discard,False
+g10_funding,0.023,0.07594427480436577,0.052944274804365775,0.07594427480436577,WEAK,discard,False
+g8_fg,0.15,,,,NO_DATA,skip,False

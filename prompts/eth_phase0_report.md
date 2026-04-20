@@ -1,104 +1,108 @@
-# 🔬 ETH Phase 0 — Statistical Descriptive Study
+# 🔬 ETH Phase 0 — Statistical Study Report
 
-**Generated:** 2026-04-19 22:06 UTC
+**Generated:** 2026-04-20 21:26 UTC
+**Window:** 180 days  |  **Method:** Pearson + Spearman + HMM regime
 
-**Objetivo:** Verificar transferibilidade dos gates BTC → ETH antes de calibrar `parameters_eth.yml`.
+## 🎯 Decisão Final
 
-## Janela 28d
+### 🔴 RECALIBRATE_DEEPLY
 
-### Regime ETH
+**ETH diferente. Recalibração profunda de gates e pesos necessária.**
 
-| Métrica | Valor |
-|---------|-------|
-| n_days | 29 |
-| price_start | 2053.89 |
-| price_end | 2286.62 |
-| total_return_pct | 11.33 |
-| daily_vol_pct | 3.13 |
-| annualized_vol_pct | 59.81 |
-| max_drawdown_pct | -8.5 |
-| autocorr_1d | -0.219 |
-| skew | 0.437 |
-| kurtosis | 0.193 |
+| Métrica | Valor | Threshold |
+|---------|-------|-----------|
+| Model Alignment | `0.495` | >0.70 copy / >0.40 adapt |
+| Strong gates | `0` | ≥3 preferred |
+| Moderate gates | `1` | — |
+| Weak gates | `2` | — |
+| Regime separates | `❌` | Bull>Sideways>Bear |
 
-### Alinhamento com BTC config
+## H1: Correlações ETH vs Forward Returns
 
-- **Model Alignment:** `0.664` (9 gates)
-- **Avg Delta:** `0.336`
-- **Distribuição:** {'🔴 broken (inv)': 5, '✅ aligned': 4}
+### Horizonte 1d
 
-### Correlações por gate
+| Feature | Pearson r | p-value | Spearman r | n | Sig |
+|---------|-----------|---------|------------|---|-----|
+| volume | -0.142 | 0.069 | -0.100 | 165 | — |
+| g9_taker | +0.058 | 0.460 | -0.000 | 165 | — |
+| rsi | +0.039 | 0.606 | +0.015 | 179 | — |
+| g10_funding | +0.016 | 0.837 | -0.004 | 165 | — |
+| bb_pct | -0.016 | 0.832 | -0.055 | 179 | — |
+| g4_oi_coin_margin | +0.015 | 0.849 | -0.034 | 165 | — |
+| ret_7d | +0.005 | 0.945 | -0.054 | 179 | — |
+| ret_1d | +0.002 | 0.983 | +0.040 | 179 | — |
 
-| Gate | Fonte | Config (BTC) | ETH 1d | ETH 3d | ETH 7d | Δ_3d | n | Status |
-|------|-------|-------------|--------|--------|--------|------|---|--------|
-| G4 OI | eth | -0.472 | -0.44 | -0.47 | -0.411 | 0.002 | 22 | ✅ aligned |
-| G10 Funding | eth | -0.064 | -0.286 | -0.192 | -0.139 | 0.128 | 22 | ✅ aligned |
-| G9 Taker | eth | 0.143 | -0.053 | -0.289 | -0.158 | 0.432 | 22 | 🔴 broken (inv) |
-| G5 Stablecoin | global | 0.326 | 0.055 | -0.156 | -0.595 | 0.482 | 22 | 🔴 broken (inv) |
-| G6 Bubble | global | -0.345 | -0.155 | -0.485 | -0.559 | 0.14 | 22 | ✅ aligned |
-| G7 ETF | global | 0.263 | 0.25 | -0.051 | -0.256 | 0.314 | 22 | 🔴 broken (inv) |
-| G8 F&G | global | -0.211 | 0.133 | 0.324 | 0.422 | 0.535 | 22 | 🔴 broken (inv) |
-| G3 DGS10 | global | -0.315 | -0.1 | -0.235 | -0.616 | 0.08 | 22 | ✅ aligned |
-| G3 Curve | global | -0.282 | 0.228 | 0.628 | 0.468 | 0.91 | 22 | 🔴 broken (inv) |
+### Horizonte 3d
 
-![Heatmap](plots/eth_corr_heatmap_28d.png)
-![Stability](plots/eth_stability_28d.png)
+| Feature | Pearson r | p-value | Spearman r | n | Sig |
+|---------|-----------|---------|------------|---|-----|
+| volume | -0.305 | 0.000 | -0.294 | 163 | ✅ |
+| ret_1d | -0.091 | 0.231 | -0.044 | 177 | — |
+| rsi | +0.076 | 0.318 | +0.056 | 177 | — |
+| g4_oi_coin_margin | +0.054 | 0.494 | +0.003 | 163 | — |
+| g10_funding | +0.052 | 0.508 | -0.034 | 163 | — |
+| bb_pct | -0.023 | 0.762 | -0.043 | 177 | — |
+| ret_7d | -0.021 | 0.785 | -0.036 | 177 | — |
+| g9_taker | -0.012 | 0.875 | +0.014 | 163 | — |
 
-## Janela 180d
+### Horizonte 7d
 
-### Regime ETH
+| Feature | Pearson r | p-value | Spearman r | n | Sig |
+|---------|-----------|---------|------------|---|-----|
+| volume | -0.323 | 0.000 | -0.269 | 159 | ✅ |
+| g4_oi_coin_margin | +0.168 | 0.035 | +0.129 | 159 | ✅ |
+| rsi | +0.142 | 0.063 | +0.096 | 173 | — |
+| g10_funding | +0.076 | 0.341 | +0.027 | 159 | — |
+| ret_7d | +0.074 | 0.334 | +0.060 | 173 | — |
+| bb_pct | +0.068 | 0.374 | +0.072 | 173 | — |
+| ret_1d | +0.009 | 0.911 | -0.019 | 173 | — |
+| g9_taker | -0.005 | 0.946 | +0.013 | 159 | — |
 
-| Métrica | Valor |
-|---------|-------|
-| n_days | 181 |
-| price_start | 3873.05 |
-| price_end | 2286.62 |
-| total_return_pct | -40.96 |
-| daily_vol_pct | 3.66 |
-| annualized_vol_pct | 69.97 |
-| max_drawdown_pct | -56.07 |
-| autocorr_1d | 0.002 |
-| skew | 0.04 |
-| kurtosis | 2.121 |
+### Horizonte 14d
 
-### Alinhamento com BTC config
+| Feature | Pearson r | p-value | Spearman r | n | Sig |
+|---------|-----------|---------|------------|---|-----|
+| volume | -0.387 | 0.000 | -0.401 | 152 | ✅ |
+| ret_7d | +0.107 | 0.170 | +0.069 | 166 | — |
+| g4_oi_coin_margin | +0.100 | 0.218 | +0.067 | 152 | — |
+| g10_funding | +0.073 | 0.369 | +0.010 | 152 | — |
+| bb_pct | +0.059 | 0.448 | +0.050 | 166 | — |
+| g9_taker | +0.045 | 0.579 | +0.086 | 152 | — |
+| rsi | +0.020 | 0.801 | -0.012 | 166 | — |
+| ret_1d | +0.011 | 0.891 | +0.008 | 166 | — |
 
-- **Model Alignment:** `0.782` (9 gates)
-- **Avg Delta:** `0.218`
-- **Distribuição:** {'⚠️ attention': 4, '✅ aligned (inv)': 2, '🔴 broken (inv)': 1, '🔴 broken': 1, '✅ aligned': 1}
+## H2: Poder Preditivo dos Gates (7d forward return)
 
-### Correlações por gate
+| Gate | BTC ref | ETH actual | |Δ| | Power | Action | Sig |
+|------|---------|------------|-----|-------|--------|-----|
+| g4_oi_coin_margin | -0.472 | +0.168 | 0.640 | 🟡 MODERATE | `keep_reduced_weight` | ✅ |
+| g5_stablecoin | +0.326 | N/A | — | ⚪ NO_DATA | `skip` | — |
+| g7_etf | +0.263 | N/A | — | ⚪ NO_DATA | `skip` | — |
+| g6_bubble | -0.345 | N/A | — | ⚪ NO_DATA | `skip` | — |
+| g3_dgs10 | -0.315 | N/A | — | ⚪ NO_DATA | `skip` | — |
+| g3_curve | -0.280 | N/A | — | ⚪ NO_DATA | `skip` | — |
+| g9_taker | +0.060 | -0.005 | 0.065 | 🔴 WEAK | `discard` | — |
+| g10_funding | +0.023 | +0.076 | 0.053 | 🔴 WEAK | `discard` | — |
+| g8_fg | +0.150 | N/A | — | ⚪ NO_DATA | `skip` | — |
 
-| Gate | Fonte | Config (BTC) | ETH 1d | ETH 3d | ETH 7d | Δ_3d | n | Status |
-|------|-------|-------------|--------|--------|--------|------|---|--------|
-| G4 OI | eth | -0.472 | 0.019 | 0.019 | 0.128 | 0.491 | 159 | 🔴 broken (inv) |
-| G10 Funding | eth | -0.064 | -0.127 | 0.02 | 0.107 | 0.084 | 159 | ✅ aligned (inv) |
-| G9 Taker | eth | 0.143 | 0.024 | -0.007 | -0.053 | 0.15 | 159 | ✅ aligned (inv) |
-| G5 Stablecoin | global | 0.326 | 0.083 | 0.122 | 0.219 | 0.204 | 174 | ⚠️ attention |
-| G6 Bubble | global | -0.345 | 0.003 | -0.011 | -0.014 | 0.334 | 174 | 🔴 broken |
-| G7 ETF | global | 0.263 | 0.038 | 0.056 | 0.246 | 0.207 | 174 | ⚠️ attention |
-| G8 F&G | global | -0.211 | -0.101 | -0.1 | -0.086 | 0.111 | 174 | ✅ aligned |
-| G3 DGS10 | global | -0.315 | -0.103 | -0.159 | -0.196 | 0.156 | 174 | ⚠️ attention |
-| G3 Curve | global | -0.282 | -0.03 | -0.061 | -0.014 | 0.221 | 174 | ⚠️ attention |
+## H3: R5C HMM aplicado ao ETH
 
-![Heatmap](plots/eth_corr_heatmap_180d.png)
-![Stability](plots/eth_stability_180d.png)
+*R5C não disponível ou falhou.*
 
-## 💡 Guia de decisão
+## H4: Model Alignment
 
-| Alignment | Decisão |
-|-----------|---------|
-| > 0.7 | Copiar parameters.yml como baseline ETH — ajuste mínimo |
-| 0.4 – 0.7 | Adaptive layer suficiente — ajustar corr_cfg dos gates ⚠️ |
-| < 0.4 | Recalibração manual necessária antes de paper trading |
+**Alignment = 0.495**
 
-**Gates ✅ aligned:** transferíveis direto
-**Gates ⚠️ attention:** ajustar `corr_cfg` no parameters_eth.yml
-**Gates 🔴 broken:** remover ou desativar para ETH
-**Gates (inv):** sinal invertido — requer atenção especial
+🟡 Parcialmente similar → adaptar
 
-## 🎯 Próximos passos
+## 🎯 Próximos Passos
 
-1. Analisar quais gates são transferíveis
-2. Criar `conf/parameters_eth.yml` com ajustes necessários
-3. Ativar paper trading ETH quando alignment > 0.4
+1. Retreinar R5C HMM com dados ETH (dados acumulam ao longo do tempo)
+2. Re-examinar correlações em janelas diferentes (90d, 360d)
+3. Considerar features ETH-específicas (staking yield, ETH/BTC ratio)
+
+## 📊 Plots
+
+- [Correlações BTC vs ETH](plots/fase0/correlations_eth_vs_btc.png)
+- [Regimes R5C em ETH](plots/fase0/regimes_eth.png)
+- [Matriz de correlação ETH](plots/fase0/correlation_matrix_eth.png)
