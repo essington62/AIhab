@@ -29,7 +29,7 @@ RUN mkdir -p data/{01_raw/{spot,futures,macro,coinglass,sentiment,news,market},0
 RUN chmod +x scripts/*.sh
 
 # Crontab
-COPY crontab /etc/cron.d/aihab-cron
+COPY docker/crontab /etc/cron.d/aihab-cron
 
 # PYTHONPATH baked in — visible to supercronic jobs and any python -m call
 ENV PYTHONPATH=/app
