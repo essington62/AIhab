@@ -7,6 +7,7 @@
 zscore_windows:
   oi: 14
   taker: 14
+  taker_1h: 168          # 7d × 24h — native Binance 1h taker (FASE 3)
   funding: 14
   dgs10: 30
   dgs2: 30

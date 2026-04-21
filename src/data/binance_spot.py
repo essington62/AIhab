@@ -45,8 +45,10 @@ def fetch_spot_klines(
         "taker_buy_base_vol", "taker_buy_quote_vol", "ignore",
     ])
     df["timestamp"] = pd.to_datetime(df["open_time"], unit="ms", utc=True)
-    df = df[["timestamp", "open", "high", "low", "close", "volume", "num_trades"]].copy()
-    for col in ["open", "high", "low", "close", "volume"]:
+    df = df[["timestamp", "open", "high", "low", "close", "volume", "num_trades",
+             "taker_buy_base_vol", "taker_buy_quote_vol"]].copy()
+    for col in ["open", "high", "low", "close", "volume",
+                "taker_buy_base_vol", "taker_buy_quote_vol"]:
         df[col] = df[col].astype(float)
     df["num_trades"] = df["num_trades"].astype(int)
     df["source"] = "binance_spot"  # Fix 8

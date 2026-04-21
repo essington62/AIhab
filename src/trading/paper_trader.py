@@ -49,6 +49,7 @@ from src.trading.execution import (
     load_portfolio,
     parse_utc,
 )
+from src.trading.shadow_filters import evaluate_taker_z_shadow
 
 logger = logging.getLogger("trading.paper_trader")
 
@@ -1130,6 +1131,15 @@ def run_cycle() -> dict:
                             f"RSI={rf_check['rsi']:.1f} (<{rf_check['rsi_max']}) | "
                             f"ret_1d={rf_check['ret_1d']:.4f} (>{rf_check['ret_1d_min']})"
                         )
+                        # SHADOW MODE: avalia filtro taker_z sem bloquear (FASE 4)
+                        try:
+                            evaluate_taker_z_shadow(
+                                entry_time=cycle_ts,
+                                trade_id=portfolio.get("trade_id"),
+                                bot_origin="bot1",
+                            )
+                        except Exception as _se:
+                            logger.warning(f"Shadow filter eval failed (non-blocking): {_se}")
                     else:
                         logger.info(
                             f"BOT1 ENTRY FILTERED: score={result.get('score', 0):.3f} | "
@@ -1179,6 +1189,15 @@ def run_cycle() -> dict:
                     f"ret_1d={mf_check['ret_1d']:.4f} | RSI={mf_check['rsi']:.1f} | "
                     f"BB={mf_check['bb_pct']:.3f}"
                 )
+                # SHADOW MODE: avalia filtro taker_z sem bloquear (FASE 4)
+                try:
+                    evaluate_taker_z_shadow(
+                        entry_time=cycle_ts,
+                        trade_id=portfolio.get("trade_id"),
+                        bot_origin="bot2",
+                    )
+                except Exception as _se:
+                    logger.warning(f"Shadow filter eval failed (non-blocking): {_se}")
             else:
                 if mf_check.get("stablecoin_z") and mf_check["stablecoin_z"] > 0.5:
                     logger.info(

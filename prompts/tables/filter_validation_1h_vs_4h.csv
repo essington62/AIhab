@@ -1,0 +1,18 @@
+scenario,col,threshold,n_blocked,n_blocked_losers,n_blocked_winners,n,wr,expect,sharpe,total_ret,max_dd,pf
+BASELINE,—,,0,0,0,136,66.9,0.5893,2.713,118.7,-19.81,2.187
+4h CoinGlass t=0 BIASED < -0.5,taker_z_t0,-0.5,43,22,21,93,75.3,0.8625,4.237,120.08,-10.04,3.325
+4h CoinGlass t=0 BIASED < -0.8,taker_z_t0,-0.8,35,21,14,101,76.2,0.8453,4.234,131.6,-10.04,3.372
+4h CoinGlass t=0 BIASED < -1.0,taker_z_t0,-1.0,34,20,14,102,75.5,0.8224,4.086,128.13,-10.04,3.237
+4h CoinGlass t=0 BIASED < -1.5,taker_z_t0,-1.5,20,13,7,116,72.4,0.7533,3.616,135.74,-11.39,2.82
+4h CoinGlass prev SAFE < -0.5,taker_z_prev_4h,-0.5,29,13,16,107,70.1,0.7044,3.301,109.27,-18.59,2.57
+4h CoinGlass prev SAFE < -0.8,taker_z_prev_4h,-0.8,20,12,8,116,71.6,0.7489,3.551,134.47,-18.59,2.755
+4h CoinGlass prev SAFE < -1.0,taker_z_prev_4h,-1.0,19,12,7,117,71.8,0.7596,3.607,139.16,-18.59,2.795
+4h CoinGlass prev SAFE < -1.5,taker_z_prev_4h,-1.5,0,0,0,136,66.9,0.5893,2.713,118.7,-19.81,2.187
+1h Binance t=0 BIASED < -0.5,taker_z_1h_t0,-0.5,42,18,24,94,71.3,0.7136,3.384,93.03,-10.35,2.656
+1h Binance t=0 BIASED < -0.8,taker_z_1h_t0,-0.8,31,17,14,105,73.3,0.7944,3.83,126.86,-10.35,2.986
+1h Binance t=0 BIASED < -1.0,taker_z_1h_t0,-1.0,26,16,10,110,73.6,0.8021,3.877,137.9,-10.35,3.028
+1h Binance t=0 BIASED < -1.5,taker_z_1h_t0,-1.5,9,5,4,127,68.5,0.6375,2.964,120.76,-16.09,2.349
+1h Binance prev SAFE < -0.5,taker_z_1h_prev,-0.5,52,20,32,84,70.2,0.6708,3.17,73.65,-10.04,2.503
+1h Binance prev SAFE < -0.8,taker_z_1h_prev,-0.8,34,17,17,102,72.5,0.7572,3.633,113.4,-10.04,2.839
+1h Binance prev SAFE < -1.0,taker_z_1h_prev,-1.0,26,15,11,110,72.7,0.7719,3.705,130.15,-11.39,2.887
+1h Binance prev SAFE < -1.5,taker_z_1h_prev,-1.5,8,4,4,128,68.0,0.635,2.934,121.38,-17.46,2.322

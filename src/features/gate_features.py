@@ -60,6 +60,20 @@ def _series(name: str, col: str) -> pd.Series:
 
 
 # ---------------------------------------------------------------------------
+# Spot taker z-score (native 1h Binance — FASE 3)
+# ---------------------------------------------------------------------------
+
+def _spot_taker_1h_zscore(window: int) -> dict[str, pd.Series]:
+    """taker_z_1h from Binance native 1h spot data (FASE 3)."""
+    df = _load_ts("clean_spot_1h")
+    if df.empty or "taker_buy_base_vol" not in df.columns or "volume" not in df.columns:
+        logger.warning("clean_spot_1h: taker_buy_base_vol missing — skipping taker_z_1h")
+        return {}
+    ratio = df["taker_buy_base_vol"] / df["volume"].replace(0, np.nan)
+    return {"taker_z_1h": compute_zscore(ratio, window)}
+
+
+# ---------------------------------------------------------------------------
 # Futures z-scores (1h)
 # ---------------------------------------------------------------------------
 
@@ -143,6 +157,7 @@ def compute_all_zscores() -> pd.DataFrame:
     etf_roll = params["etf_flow_rolling"]
 
     futures = _futures_zscores(windows)
+    spot_taker = _spot_taker_1h_zscore(windows.get("taker_1h", 168))
     macro = _macro_zscores(windows)
     daily = _daily_zscores(windows, etf_roll)
 
@@ -158,6 +173,10 @@ def compute_all_zscores() -> pd.DataFrame:
 
     # 1h futures series: reindex + ffill (taker/funding may lag OI by 1-4h)
     for name, series in futures.items():
+        result[name] = series.reindex(base_idx).ffill()
+
+    # 1h spot taker (native Binance — FASE 3): reindex to OI base
+    for name, series in spot_taker.items():
         result[name] = series.reindex(base_idx).ffill()
 
     # Daily series: ffill to 1h
