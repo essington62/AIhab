@@ -143,28 +143,53 @@ class TestSyncMultiBucketPortfolio:
         assert btc.current_capital_usd == 10500.0
         assert btc.has_position is False
 
+    def test_sync_btc_with_real_structure(self, mock_config):
+        """Testa sync com estrutura real do portfolio_state.json BTC."""
+        portfolio_data = {
+            "has_position": True,
+            "entry_price": 75199.97,
+            "entry_time": "2026-04-20 10:05:35.671554+00:00",
+            "quantity": 0.131108,
+            "capital_usd": 9859.32,
+            "trailing_high": 76415.99,
+            "stop_loss_price": 75651.83,
+            "take_profit_price": 76703.97,
+            "entry_bot": "bot2",
+            "buckets": {
+                "btc_bot1": {"current_capital": 4929.66, "has_position": False},
+                "btc_bot2": {"current_capital": 4929.66, "has_position": False},
+            },
+        }
+        with open(mock_config["portfolio_btc"], "w") as f:
+            json.dump(portfolio_data, f)
+
+        cm = MultiAssetManager(config_path=mock_config["config_path"])
+        cm.sync_from_legacy()
+
+        btc = cm.get_bucket("btc")
+        assert btc.has_position is True
+        assert btc.entry_price == 75199.97
+        assert btc.current_capital_usd == 9859.32
+        assert btc.entry_timestamp == "2026-04-20 10:05:35.671554+00:00"
+        assert btc.bot_origin == "bot2"
+        assert btc.realized_pnl == pytest.approx(-140.68, abs=0.01)
+
     def test_sync_btc_active_sub_bucket(self, mock_config):
+        # Estrutura real: campos de posição no root, sub-buckets só com current_capital
         with open(mock_config["portfolio_btc"], "w") as f:
             json.dump({
                 "capital_usd": 10000.0,
                 "has_position": True,
+                "entry_price": 75000.0,
+                "quantity": 0.066,
+                "stop_loss_price": 73500.0,
+                "take_profit_price": 76500.0,
+                "trailing_high": 75200.0,
+                "entry_time": "2026-04-20T10:00:00+00:00",
+                "entry_bot": "bot2",
                 "buckets": {
-                    "btc_bot1": {
-                        "has_position": False,
-                        "current_capital": 5000.0,
-                        "entry_price": None,
-                    },
-                    "btc_bot2": {
-                        "has_position": True,
-                        "current_capital": 5000.0,
-                        "entry_price": 75000.0,
-                        "quantity": 0.066,
-                        "stop_loss_price": 73500.0,
-                        "take_profit_price": 76500.0,
-                        "trailing_high": 75200.0,
-                        "entry_time": "2026-04-20T10:00:00+00:00",
-                        "entry_mode": "bot2",
-                    },
+                    "btc_bot1": {"has_position": False, "current_capital": 5000.0},
+                    "btc_bot2": {"has_position": True, "current_capital": 5000.0},
                 },
             }, f)
 

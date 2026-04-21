@@ -13,7 +13,7 @@ capital_manager:
       bots_allowed:
         - "bot_1_reversal"
         - "bot_2_momentum"
-      legacy_portfolio_path: "data/04_scoring/portfolio.json"
+      legacy_portfolio_path: "data/05_output/portfolio_state.json"
       enabled: true
 
     eth:

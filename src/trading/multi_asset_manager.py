@@ -136,7 +136,10 @@ class MultiAssetManager:
         """
         Lê portfolios legados e atualiza buckets.
 
-        Ponte entre portfolio.json / portfolio_eth.json e a visão centralizada.
+        Suporta dois formatos:
+        - BTC (portfolio_state.json): entry_time, entry_bot, com/sem sub-buckets internos
+        - ETH (portfolio_eth.json): entry_timestamp, entry_volume_z, estrutura plana
+
         NÃO escreve de volta nos portfolios legados.
         """
         for bucket_id, bucket in self.buckets.items():
@@ -152,42 +155,41 @@ class MultiAssetManager:
                 with open(legacy_path) as f:
                     legacy = json.load(f)
 
-                bucket.current_capital_usd = legacy.get("capital_usd", bucket.initial_capital_usd)
+                # Capital — suporta capital_usd e total_capital_usd
+                bucket.current_capital_usd = legacy.get(
+                    "capital_usd",
+                    legacy.get("total_capital_usd", bucket.initial_capital_usd),
+                )
 
-                # BTC portfolio usa multi-bucket (buckets.btc_bot1 / btc_bot2)
-                # Detecta se há posição em qualquer sub-bucket
-                if "buckets" in legacy:
-                    active = next(
-                        (b for b in legacy["buckets"].values() if b.get("has_position")),
-                        None,
-                    )
-                    bucket.has_position = active is not None
-                    if active:
-                        bucket.entry_price = active.get("entry_price")
-                        bucket.quantity = active.get("quantity")
-                        bucket.trailing_high = active.get("trailing_high")
-                        bucket.stop_loss_price = active.get("stop_loss_price")
-                        bucket.take_profit_price = active.get("take_profit_price")
-                        bucket.entry_timestamp = active.get("entry_time")
-                        bucket.bot_origin = active.get("entry_mode")
-                    else:
-                        bucket.entry_price = None
-                        bucket.quantity = None
-                        bucket.trailing_high = None
-                        bucket.stop_loss_price = None
-                        bucket.take_profit_price = None
-                        bucket.entry_timestamp = None
-                        bucket.bot_origin = None
-                else:
-                    # ETH portfolio (flat)
-                    bucket.has_position = legacy.get("has_position", False)
-                    bucket.entry_price = legacy.get("entry_price")
-                    bucket.quantity = legacy.get("quantity")
-                    bucket.trailing_high = legacy.get("trailing_high")
-                    bucket.stop_loss_price = legacy.get("stop_loss_price")
-                    bucket.take_profit_price = legacy.get("take_profit_price")
-                    bucket.entry_timestamp = legacy.get("entry_timestamp")
-                    bucket.bot_origin = legacy.get("entry_volume_z") and "bot_3_volume"
+                # Posição — campos root-level (BTC e ETH)
+                bucket.has_position = legacy.get("has_position", False)
+                bucket.entry_price = legacy.get("entry_price")
+                bucket.quantity = (
+                    legacy.get("quantity")
+                    or legacy.get("btc_held")
+                    or legacy.get("eth_held")
+                )
+
+                # Timestamps — BTC usa entry_time, ETH usa entry_timestamp
+                bucket.entry_timestamp = (
+                    legacy.get("entry_timestamp")
+                    or legacy.get("entry_time")
+                )
+
+                # Stops
+                bucket.trailing_high = legacy.get("trailing_high")
+                bucket.stop_loss_price = legacy.get("stop_loss_price")
+                bucket.take_profit_price = legacy.get("take_profit_price")
+
+                # Bot origin — BTC usa entry_bot, ETH usa bot_origin / entry_mode
+                bucket.bot_origin = (
+                    legacy.get("bot_origin")
+                    or legacy.get("entry_bot")
+                    or legacy.get("entry_mode")
+                )
+                # ETH Bot 3: se entry_volume_z está presente → veio do bot3
+                if bucket.bot_origin is None and legacy.get("entry_volume_z") is not None:
+                    bucket.bot_origin = "bot_3_volume"
 
                 # entry_price_usd
                 if bucket.has_position and bucket.entry_price and bucket.quantity:
