@@ -214,6 +214,42 @@ def load_fed_calendar() -> dict:
 def load_params() -> dict:
     return get_params()
 
+
+@st.cache_data(ttl=60)
+def load_sol_trades_json() -> pd.DataFrame:
+    """Load SOL trades from JSON (data/05_trades/) and normalize to unified schema."""
+    path = ROOT / "data/05_trades/completed_trades_sol.json"
+    if not path.exists():
+        return pd.DataFrame()
+    try:
+        raw = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return pd.DataFrame()
+    if not raw:
+        return pd.DataFrame()
+
+    rows = []
+    for t in raw:
+        ep = t.get("entry_price", 0) or 0
+        rows.append({
+            "entry_time":        pd.to_datetime(t.get("entry_timestamp"), utc=True),
+            "exit_time":         pd.to_datetime(t.get("exit_timestamp"),  utc=True),
+            "entry_price":       ep,
+            "exit_price":        t.get("exit_price"),
+            "return_pct":        (t.get("pnl_pct") or 0) * 100,
+            "exit_reason":       t.get("exit_reason"),
+            "stop_loss_price":   round(ep * 0.985, 4) if ep else None,
+            "take_profit_price": round(ep * 1.020, 4) if ep else None,
+            "trailing_high":     None,
+            "pnl_usd":           t.get("pnl_usd", 0),
+            "quantity":          t.get("quantity", 0),
+            "symbol":            t.get("symbol", "SOLUSDT"),
+            "entry_bot":         "bot4",
+            "rsi":               (t.get("entry_features") or {}).get("rsi"),
+            "stablecoin_z":      None,
+        })
+    return pd.DataFrame(rows)
+
 def _latest(df: pd.DataFrame, col: str, default=None):
     if df.empty or col not in df.columns:
         return default
@@ -1574,7 +1610,7 @@ def main():
 
     # Bot 4 trades
     st.markdown("#### 📊 Histórico Bot 4 — Trades")
-    _sol_tdf = load_parquet("data/05_output/trades_sol.parquet")
+    _sol_tdf = load_sol_trades_json()
     if _sol_tdf.empty:
         if _sol_has_pos:
             st.info(f"Nenhum trade Bot 4 completado. Primeira posição ativa: ${_sol_port.get('entry_price', 0):,.2f} (paper).")
@@ -2242,9 +2278,10 @@ def main():
 
     def _load_bot_trades(asset, bot_key):
         """Load trades for a given asset/bot."""
+        if asset == "sol":
+            return load_sol_trades_json()
         path_map = {"btc": "data/05_output/trades.parquet",
-                    "eth": "data/05_output/trades_eth.parquet",
-                    "sol": "data/05_output/trades_sol.parquet"}
+                    "eth": "data/05_output/trades_eth.parquet"}
         df = load_parquet(path_map.get(asset, "data/05_output/trades.parquet"))
         if df.empty:
             return df
