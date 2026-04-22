@@ -25,6 +25,15 @@ capital_manager:
       legacy_portfolio_path: "data/04_scoring/portfolio_eth.json"
       enabled: true
 
+    sol:
+      asset: "SOLUSDT"
+      initial_capital_usd: 10000
+      max_concurrent_positions: 1
+      bots_allowed:
+        - "sol_bot4"
+      legacy_portfolio_path: "data/04_scoring/portfolio_sol.json"
+      enabled: true
+
   # Regras globais (aplicam a todos os buckets)
   global_rules:
     enabled: false  # desativado — só observação por ora

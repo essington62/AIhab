@@ -1,0 +1,33 @@
+sol_bot:
+  enabled: true
+  capital_usd: 10000
+  gates:
+    g0_eth_regime:
+      enabled: true
+      eth_ret_1h_min: 0.0
+    g1_taker:
+      enabled: true
+      taker_z_4h_min: 0.3
+    g2_oi_bipolar:
+      enabled: true
+      oi_z_1h_min: -0.5
+      oi_z_24h_warning: 2.0
+      oi_z_24h_block: 2.0
+    g3_volume_aux:
+      enabled: true
+      volume_z_prev_min: -0.5
+  filters:
+    ret_1d_min: 0.0
+    rsi_min: 60.0
+    rsi_max: 80.0
+    close_above_ma21: true
+  stops:
+    stop_loss_pct: 0.015
+    take_profit_pct: 0.02
+    trailing_pct: 0.01
+    max_hold_hours: 120
+  early_exits:
+    oi_24h_reversion:
+      enabled: true
+      oi_z_threshold: 2.0
+      min_hours_since_entry: 12
