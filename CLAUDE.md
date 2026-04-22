@@ -147,7 +147,7 @@ btc_AI/
 │   ├── 03_models/                 # R5C HMM pickle
 │   ├── 04_scoring/                # Gate scores, regime history
 │   ├── 05_output/                 # Portfolio, trades (parquet)
-│   └── 05_trades/                 # Trades JSON por bot (completed_trades_sol.json)
+│   └── 05_trades/                 # Trades JSON por bot (completed_trades_eth.json, completed_trades_sol.json)
 ├── src/
 │   ├── config.py                  # Loader centralizado
 │   ├── data/                      # Ingestão (10 módulos)
@@ -160,22 +160,27 @@ btc_AI/
 │   │   └── technical.py           # get_latest_technical() → rsi_14, bb_pct, ma_21, volume_z, rsi (alias)
 │   ├── models/                    # r5c_hmm, gate_scoring
 │   ├── trading/
-│   │   ├── paper_trader.py        # run_cycle, check_momentum_filter, check_momentum_filter_v2
+│   │   ├── paper_trader.py        # Bot 1+2 BTC: run_cycle, check_momentum_filter
+│   │   ├── eth_bot3.py            # Bot 3 ETH: volume Q2 strategy, run_hourly_cycle
+│   │   ├── sol_bot4.py            # Bot 4 SOL: taker/flow strategy, run_hourly_cycle (PAUSADO)
 │   │   ├── dynamic_tp.py          # Dynamic TP v2: 3 regras (volume_z, RSI+BB, default)
 │   │   ├── capital_manager.py     # Multi-bucket portfolio (btc_bot1 + btc_bot2, 50/50)
 │   │   └── execution.py
 │   └── dashboard/                 # Streamlit app (9 seções)
 │       └── app.py                 # load_sol_trades_json() lê 05_trades/completed_trades_sol.json
 ├── scripts/
-│   ├── hourly_cycle.sh / daily_update.sh
+│   ├── hourly_cycle.sh            # Bot 1+2 BTC (cron :05)
+│   ├── daily_update.sh            # Atualização diária (07:00 UTC)
+│   ├── eth_hourly_cycle.py        # Bot 3 ETH (cron :10) → eth_bot3.run_hourly_cycle
+│   ├── sol_hourly_cycle.py        # Bot 4 SOL (cron :15) → sol_bot4.run_hourly_cycle
 │   ├── bootstrap_eth_history.py
 │   ├── bootstrap_ls_coinglass.py
 │   ├── check_eth_data_coverage.py
 │   ├── eth_phase0_statistical_study.py
 │   ├── backtest_bot2_v2.py
-│   ├── sol_filters_study.py       # Estudo filtros estruturais SOL (2026-04-22)
-│   ├── sol_v2_sweet_spot_backtest.py  # Backtest sweet spot close/MA21 SOL (2026-04-22)
-│   ├── sol_bot2_transfer_study.py # Estudo transfer Bot 2 → SOL (2026-04-22)
+│   ├── sol_filters_study.py       # Estudo filtros estruturais SOL — REJEITADO
+│   ├── sol_v2_sweet_spot_backtest.py  # Backtest sweet spot SOL — REJEITADO
+│   ├── sol_bot2_transfer_study.py # Transfer Bot 2 → SOL — REJEITADO
 │   └── migrate_portfolio_to_multibucket.py
 ├── prompts/                       # Relatórios de análise e backtest
 │   ├── eth_phase0_report.md
@@ -194,15 +199,29 @@ btc_AI/
 
 ## Dashboard (9 seções, dark theme CoinGlass style)
 
-1. Header (BTC, OI, F&G, regime, score, MA200, Fed, cron)
-2. Gate Scoring v2 (6 clusters + texto interpretativo)
-3. AI Analyst (DeepSeek sob demanda)
-4. Whale Tracking (L/S + gráfico divergência)
-5. Derivativos (OI, funding, taker, liquidações, bid/ask, order book)
-6. Macro (DGS10, DGS2, curve, VIX, DXY, Oil, S&P)
-7. News & Sentiment (feed + scores + F&G + Fed Sentinel)
-8. System Health (freshness + calibration alerts + score history)
-9. Paper Trading (capital, P&L, equity curve, alpha — BTC + SOL separados)
+1. **Header** — BTC price, OI, F&G, regime, score, MA200 status, Fed, cron health
+2. **Gate Scoring v2** — 6 clusters + texto interpretativo
+3. **Paper Trading** — 4 sub-seções por bot:
+   - **3a Bot 1 (BTC Gate)** — capital, posição aberta, histórico de trades
+   - **3b Bot 2 (BTC Momentum)** — capital, TP razão, métricas (WR, PF, retorno, MaxDD)
+   - **3c Bot 3 (ETH Volume)** — preço ETH, capital, posição aberta, status 3 filtros (volume Q2 / RSI / MA200), histórico
+   - **3d Bot 4 (SOL — PAUSADO)** — estado do portfolio, histórico de trades
+4. **AI Analyst** — DeepSeek sob demanda
+5. **Whale Tracking** — L/S top accounts/positions + gráfico divergência
+6. **Derivativos** — OI, funding, taker, liquidações, bid/ask, order book
+7. **Macro** — DGS10, DGS2, curve, VIX, DXY, Oil, S&P
+8. **News & Sentiment** — feed + scores + F&G + Fed Sentinel (seção 9 no código)
+9. **System Health** — data freshness + calibration alerts + score history + Bot 1 model health
+
+### Dashboard — Paths de dados por bot
+
+| Bot | Portfolio | Trades | Leitura dashboard |
+|-----|-----------|--------|-------------------|
+| Bot 1/2 BTC | `data/04_scoring/portfolio_state.json` | `data/05_output/trades_history.parquet` | `load_parquet()` |
+| Bot 3 ETH | `data/04_scoring/portfolio_eth.json` | `data/05_trades/completed_trades_eth.json` | `load_parquet("data/05_output/trades_eth.parquet")` ⚠️ |
+| Bot 4 SOL | `data/04_scoring/portfolio_sol.json` | `data/05_trades/completed_trades_sol.json` | `load_sol_trades_json()` |
+
+> ⚠️ ETH dashboard ainda usa `data/05_output/trades_eth.parquet` (legado). SOL usa `load_sol_trades_json()` que lê o JSON diretamente.
 
 ## Calibration Alerts
 
@@ -211,22 +230,42 @@ Rolling 30d correlação vs retorno 3d forward. Compara com parameters.yml.
 
 ## Bots — Status (2026-04-22)
 
-### Bot 1 BTC (Gate Scoring)
-- **Status:** LIVE (produção)
-- Estratégia: Gate Score threshold → ENTER/BLOCK
+| Bot | Asset | Strategy | Status | Script |
+|-----|-------|----------|--------|--------|
+| Bot 1 | BTC | Gate Scoring (reversal filter) | ✅ LIVE | `hourly_cycle.sh` |
+| Bot 2 | BTC | Momentum + Stablecoin | ✅ LIVE | `hourly_cycle.sh` |
+| Bot 3 | ETH | Volume Defensivo (Q2) | ✅ LIVE | `eth_hourly_cycle.py` |
+| Bot 4 | SOL | Taker/Flow | ⏸ PAUSADO | `sol_hourly_cycle.py` |
+
+### Bot 1 BTC — Gate Scoring
+- Estratégia: Gate Score threshold → ENTER/BLOCK + reversal filter
 - Stops: SL 2%, SG 1.5%, trailing 1%
+- `entry_bot: "bot1"` internamente; portfolio compartilhado com Bot 2 (`portfolio_state.json`)
 
-### Bot 2 BTC (Momentum + Stablecoin)
-- **Status:** LIVE (produção) + Dynamic TP v2 ativo
+### Bot 2 BTC — Momentum + Stablecoin
 - Estratégia: stablecoin_z > 1.3, ret_1d > 0, 60 ≤ RSI ≤ 80, BB < 0.98, close > MA21, spike guard
-- Stops: SL 1.5%, Trail 1%, TP dinâmico (ver abaixo)
+- Stops: SL 1.5%, Trail 1%, TP dinâmico via `dynamic_tp.py` (ver seção abaixo)
 - **Live Mar-Abr 2026:** 5 trades, WR 80%, PF 2.07, +1.83%
-- ⚠️ Backtest 2026 (N=25): Sharpe -0.90 — divergência live/backtest a monitorar (pequena amostra live)
+- ⚠️ Backtest 2026 (N=25): Sharpe -0.90 — divergência live/backtest a monitorar (amostra live pequena)
+- `entry_bot: "bot2"` internamente
 
-### Bot 4 SOL
+### Bot 3 ETH — Volume Defensivo
+- Estratégia: mean reversion em volume baixo-médio (Q2)
+  - **BLOCK:** volume_z > 1.5 → nunca entra
+  - **ENTRY:** volume_z ∈ (-0.75, -0.30) + RSI < 60 + close > MA200
+- Stops: SL 2%, TP 4% (R:R 1:2), trailing 1.5%, max hold 168h (7 dias)
+- Config: `conf/parameters_eth.yml`
+- Portfolio: `data/04_scoring/portfolio_eth.json`
+- Trades: `data/05_trades/completed_trades_eth.json`
+- Cron: `scripts/eth_hourly_cycle.py` → `src/trading/eth_bot3.py`
+
+### Bot 4 SOL — Taker/Flow
 - **Status:** PAUSADO (2026-04-22)
 - 1 trade fechado: -0.98% (TRAIL, 3h28m)
 - **Conclusão: SOL ABANDONADO** — 3 estudos consecutivos rejeitados (ver seção SOL abaixo)
+- Config: `conf/parameters_sol.yml` (se existir) | Portfolio: `data/04_scoring/portfolio_sol.json`
+- Trades: `data/05_trades/completed_trades_sol.json`
+- Cron: `scripts/sol_hourly_cycle.py` → `src/trading/sol_bot4.py`
 
 ## Bot 2 — Dynamic TP v2 (live desde 2026-04-22)
 
