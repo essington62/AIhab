@@ -140,13 +140,14 @@ btc_AI/
 │   └── credentials.yml            # API keys (gitignored)
 ├── data/                          # gitignored, volumes Docker
 │   ├── 01_raw/                    # Dados brutos das APIs
-│   │   ├── spot/                  # btc_1h, eth_1h
+│   │   ├── spot/                  # btc_1h, eth_1h, sol_1h
 │   │   └── futures/               # oi, funding, taker, ls_account, ls_position (BTC+ETH)
 │   ├── 02_intermediate/           # Clean: resampled, ffilled
 │   ├── 02_features/               # Z-scores, news_scores
 │   ├── 03_models/                 # R5C HMM pickle
 │   ├── 04_scoring/                # Gate scores, regime history
-│   └── 05_output/                 # Portfolio, trades
+│   ├── 05_output/                 # Portfolio, trades (parquet)
+│   └── 05_trades/                 # Trades JSON por bot (completed_trades_sol.json)
 ├── src/
 │   ├── config.py                  # Loader centralizado
 │   ├── data/                      # Ingestão (10 módulos)
@@ -155,29 +156,39 @@ btc_AI/
 │   │   ├── coinglass_futures.py   # OI/Funding/Taker 4h — multi-symbol
 │   │   ├── coinglass_ls.py        # L/S bootstrap via CoinGlass (one-shot)
 │   │   └── utils.py               # fetch_with_retry, dedup_by_timestamp, save_with_window
-│   ├── features/                  # Technical, gate_features, fed_sentinel
+│   ├── features/
+│   │   └── technical.py           # get_latest_technical() → rsi_14, bb_pct, ma_21, volume_z, rsi (alias)
 │   ├── models/                    # r5c_hmm, gate_scoring
 │   ├── trading/
 │   │   ├── paper_trader.py        # run_cycle, check_momentum_filter, check_momentum_filter_v2
-│   │   ├── capital_manager.py     # Multi-bucket portfolio (btc_bot1 + btc_bot2)
+│   │   ├── dynamic_tp.py          # Dynamic TP v2: 3 regras (volume_z, RSI+BB, default)
+│   │   ├── capital_manager.py     # Multi-bucket portfolio (btc_bot1 + btc_bot2, 50/50)
 │   │   └── execution.py
 │   └── dashboard/                 # Streamlit app (9 seções)
+│       └── app.py                 # load_sol_trades_json() lê 05_trades/completed_trades_sol.json
 ├── scripts/
 │   ├── hourly_cycle.sh / daily_update.sh
-│   ├── bootstrap_eth_history.py   # One-shot ETH data bootstrap
-│   ├── bootstrap_ls_coinglass.py  # L/S bootstrap via CoinGlass API
-│   ├── check_eth_data_coverage.py # Verificar cobertura de dados ETH+BTC
-│   ├── eth_phase0_statistical_study.py  # Análise descritiva ETH (gates vs forward returns)
-│   ├── backtest_bot2_v2.py        # Backtest estrutural Bot 2 early reversal
+│   ├── bootstrap_eth_history.py
+│   ├── bootstrap_ls_coinglass.py
+│   ├── check_eth_data_coverage.py
+│   ├── eth_phase0_statistical_study.py
+│   ├── backtest_bot2_v2.py
+│   ├── sol_filters_study.py       # Estudo filtros estruturais SOL (2026-04-22)
+│   ├── sol_v2_sweet_spot_backtest.py  # Backtest sweet spot close/MA21 SOL (2026-04-22)
+│   ├── sol_bot2_transfer_study.py # Estudo transfer Bot 2 → SOL (2026-04-22)
 │   └── migrate_portfolio_to_multibucket.py
 ├── prompts/                       # Relatórios de análise e backtest
 │   ├── eth_phase0_report.md
 │   ├── bot2_v2_backtest_report.md
+│   ├── sol_v2_sweet_spot_report.md
+│   ├── sol_bot2_transfer_report.md
 │   ├── plots/                     # Heatmaps, equity curves
 │   └── tables/                    # CSVs de correlação e trades
+├── tests/
+│   ├── test_dynamic_tp.py         # 9 testes Dynamic TP v2
+│   └── ...                        # 316+ testes total
 ├── docker/                        # environment_docker.txt, crontab
 ├── Dockerfile, docker-compose.yml
-├── tests/                         # 316 testes
 └── CLAUDE.md
 ```
 
@@ -191,14 +202,75 @@ btc_AI/
 6. Macro (DGS10, DGS2, curve, VIX, DXY, Oil, S&P)
 7. News & Sentiment (feed + scores + F&G + Fed Sentinel)
 8. System Health (freshness + calibration alerts + score history)
-9. Paper Trading (capital, P&L, equity curve, alpha)
+9. Paper Trading (capital, P&L, equity curve, alpha — BTC + SOL separados)
 
 ## Calibration Alerts
 
 Rolling 30d correlação vs retorno 3d forward. Compara com parameters.yml.
 ✅ Δ<0.15 | ⚠️ Δ>0.15 | 🔴 Δ>0.25
 
-## Multi-Symbol (ETH — Fase -1 → 0)
+## Bots — Status (2026-04-22)
+
+### Bot 1 BTC (Gate Scoring)
+- **Status:** LIVE (produção)
+- Estratégia: Gate Score threshold → ENTER/BLOCK
+- Stops: SL 2%, SG 1.5%, trailing 1%
+
+### Bot 2 BTC (Momentum + Stablecoin)
+- **Status:** LIVE (produção) + Dynamic TP v2 ativo
+- Estratégia: stablecoin_z > 1.3, ret_1d > 0, 60 ≤ RSI ≤ 80, BB < 0.98, close > MA21, spike guard
+- Stops: SL 1.5%, Trail 1%, TP dinâmico (ver abaixo)
+- **Live Mar-Abr 2026:** 5 trades, WR 80%, PF 2.07, +1.83%
+- ⚠️ Backtest 2026 (N=25): Sharpe -0.90 — divergência live/backtest a monitorar (pequena amostra live)
+
+### Bot 4 SOL
+- **Status:** PAUSADO (2026-04-22)
+- 1 trade fechado: -0.98% (TRAIL, 3h28m)
+- **Conclusão: SOL ABANDONADO** — 3 estudos consecutivos rejeitados (ver seção SOL abaixo)
+
+## Bot 2 — Dynamic TP v2 (live desde 2026-04-22)
+
+`src/trading/dynamic_tp.py` — `get_dynamic_tp(rsi, bb_pct, volume_z) → (tp_pct, reason)`
+
+| Regra | Condição | TP | Reason |
+|-------|----------|----|--------|
+| 1 | volume_z > 1.0 | 1.0% | volume_exhaustion |
+| 2 | RSI > 75 AND BB > 0.95 | 1.5% | overbought |
+| 3 | default | 2.0% | default |
+
+- `volume_z`: rolling 168h z-score de volume, computado em `get_latest_technical()`
+- `rsi`: alias adicionado em `get_latest_technical()` (chave real é `rsi_14`)
+- `mf_check["volume_z"]` injetado em `paper_trader.py` antes de `_execute_bot2_entry()`
+
+## Bot 2 v2 — Early Reversal (Backtest — REJEITADO)
+
+`check_momentum_filter_v2` em paper_trader.py — duas cláusulas OR:
+- **Classic:** ret_1d > 0, RSI > 50, close > MA21
+- **Early:** ret_1d > -1.5%, trend_improving 3h, delta_ret_3h > 0.5%, RSI > 35
+
+**Veredicto backtest (2026-01-08 → 2026-04-20): ❌ REJEITADO**
+
+Early entries (n=16): WR 50% mas PF 0.79 — losses maiores que wins.
+`momentum_filter_v2.enabled: false` — código mantido para referência.
+
+## SOL — Estudos e Veredito Final (2026-04-22)
+
+**3 estudos independentes. 3 rejeições. SOL abandonado.**
+
+| Estudo | Script | Resultado | Sharpe 2026 |
+|--------|--------|-----------|-------------|
+| Filter Study | `sol_filters_study.py` | ❌ REJEITADO | 0.08 baseline |
+| v2 Sweet Spot | `sol_v2_sweet_spot_backtest.py` | ❌ REJEITADO | 0.26 (N=9, overfit) |
+| Bot 2 Transfer | `sol_bot2_transfer_study.py` | ❌ REJEITADO | -2.16 (WR 27%) |
+
+**Conclusão:** Problema é o regime SOL em 2026, não a estratégia. Nenhuma strategy de momentum tem edge em SOL 2026.
+
+### SOL Dashboard Fix
+- Bot 4 escreve trades em `data/05_trades/completed_trades_sol.json`
+- Dashboard lê via `load_sol_trades_json()` (normaliza schema: pnl_pct→return_pct×100, timestamps UTC)
+- **Não** usar `data/05_output/trades_sol.parquet` (path legado, não existe)
+
+## Multi-Symbol (ETH — Fase 0 → 1)
 
 ### Naming convention (multi-symbol)
 
@@ -245,36 +317,21 @@ Binance retém apenas ~30 dias de L/S. Bootstrap via CoinGlass (one-shot, usa qu
 - Migração: `python scripts/migrate_portfolio_to_multibucket.py`
 - Safety gates: max_drawdown 15%, max_daily_loss 5%, pause mechanics
 
-## Bot 2 v2 — Early Reversal (Backtest)
-
-`check_momentum_filter_v2` em paper_trader.py — duas cláusulas OR:
-- **Classic:** ret_1d > 0, RSI > 50, close > MA21 (igual original)
-- **Early:** ret_1d > -1.5%, trend_improving 3h, delta_ret_3h > 0.5%, RSI > 35
-
-**Veredicto backtest (2026-01-08 → 2026-04-20): ❌ REJEITADO**
-
-| Métrica | Baseline | V2 |
-|---------|----------|-----|
-| Trades | 53 | 79 |
-| WR | 34.0% | 36.7% |
-| Profit Factor | 1.87 | 1.57 |
-| MaxDD | -4.43% | -5.37% |
-| Early Advantage | — | 0.05% (threshold: 0.3%) |
-
-Early entries (n=16): WR 50% mas PF 0.79 — losses maiores que wins.
-`momentum_filter_v2.enabled: false` — código mantido para referência.
-
 ## Roadmap
 
-### ETH (Fase 1 — próximo)
-- `conf/parameters_eth.yml` com corr_cfg recalibrados para ETH
+### BTC (prioridade imediata)
+- Monitorar divergência live/backtest Bot 2 (live WR 80% N=5 vs backtest Sharpe -0.90 N=25)
+- Acumular N=20+ trades live para validação estatística
+- Rotina diária de recalibração (correlações rolling vs config)
+- Elastic IP na EC2
+
+### ETH (próximo)
+- `conf/parameters_eth.yml` com corr_cfg recalibrados para ETH (G4 OI e G6 Bubble estão broken)
 - Paper trading ETH (quando alignment > 0.4 confirmado)
 - Deploy EC2: `git pull` + `bootstrap_eth_history.py`
 
-### BTC (curto prazo)
-- Rotina diária de recalibração (correlações rolling vs config)
-- Elastic IP na EC2
-- Acumular paper trading data
+### SOL
+- **ABANDONADO** — re-avaliar somente se regime mudar (evidência externa necessária)
 
 ### Data Lake Multi-Exchange (btc-data-lake/ — projeto separado)
 - Assessment 6 exchanges (Binance, OKX, Bybit, Gate, Bitget, KuCoin)
