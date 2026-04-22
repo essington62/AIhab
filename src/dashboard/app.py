@@ -2054,15 +2054,15 @@ def main():
     except Exception as _e:
         _calib_error = str(_e)
 
-    # ── Model Health Indicator ─────────────────────────────────────────────
+    # ── BOT 1 MONITORAMENTO (Model Health + Calibration + Adaptive — consolidado) ──
     st.markdown("---")
-    st.markdown("### 📐 Model Health")
-    st.caption("Alinhamento agregado entre correlações configuradas e reais (rolling 30d)")
+    st.markdown("### 🛡️ BOT 1 - Monitoramento")
+    st.caption("Saúde estatística do Gate Scoring v2 — calibração, adaptive weights e kill switches")
 
     if _calib_error:
-        st.caption(f"Model Health error: {_calib_error}")
+        st.warning(f"⚠️ Dados de calibração indisponíveis: {_calib_error}")
     elif not calib_rows:
-        st.caption("Model Health: dados insuficientes (< 10 dias de z-scores diários)")
+        st.info("Dados insuficientes para análise (< 10 dias de z-scores)")
     else:
         _mh_cfg     = _params.get("model_health", {})
         _th_healthy = _mh_cfg.get("threshold_healthy", 0.15)
@@ -2070,199 +2070,230 @@ def main():
 
         _total_w   = sum(r["weight"] for r in calib_rows)
         _model_aln = sum(r["diff"] * r["weight"] for r in calib_rows) / _total_w
-        _simple_mn = sum(r["diff"] for r in calib_rows) / len(calib_rows)
 
+        _aw_cfg          = _params.get("adaptive_weights", {})
+        _adaptive_details = portfolio.get("last_adaptive_weights", {})
+        _gc_val          = portfolio.get("last_global_confidence_multiplier", 1.0) or 1.0
+
+        _n_extreme = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "extreme") if _adaptive_details else 0
+        _kill_gates = [d.get("gate", k) for k, d in _adaptive_details.items() if d.get("kill_status") == "extreme"] if _adaptive_details else []
+
+        # ── 3 Summary Cards ────────────────────────────────────────────────
+        _mon_c1, _mon_c2, _mon_c3 = st.columns(3)
+
+        # Card 1: Model Alignment
         if _model_aln < _th_healthy:
-            _h_status = "🟢 Saudável"
-            _h_color  = "#3fb950"
-            _h_interp = "Modelo bem alinhado com o mercado. Gates operando dentro do esperado."
+            _aln_color, _aln_badge = "#3fb950", "🟢 Saudável"
         elif _model_aln < _th_warning:
-            _h_status = "🟡 Atenção"
-            _h_color  = "#d29922"
-            _h_interp = "Alguns gates começando a divergir. Monitorar por 2–4 semanas antes de recalibrar."
+            _aln_color, _aln_badge = "#d29922", "🟡 Atenção"
         else:
-            _h_status = "🔴 Desalinhado"
-            _h_color  = "#f85149"
-            _h_interp = "Modelo significativamente desalinhado. Considerar recalibração se persistir por 60+ dias."
+            _aln_color, _aln_badge = "#f85149", "🔴 Desalinhado"
 
-        _g_healthy = sum(1 for r in calib_rows if r["diff"] < _th_healthy)
-        _g_warning = sum(1 for r in calib_rows if _th_healthy <= r["diff"] < _th_warning)
-        _g_broken  = sum(1 for r in calib_rows if r["diff"] >= _th_warning)
-        _sorted    = sorted(calib_rows, key=lambda x: x["diff"])
-        _best      = _sorted[0]
-        _worst     = _sorted[-1]
-
-        _mh_c1, _mh_c2, _mh_c3 = st.columns([1.2, 1, 1])
-        with _mh_c1:
+        with _mon_c1:
             st.markdown(f"""
-<div class="cg-card" style="border-left:4px solid {_h_color};">
-  <div class="cg-card-title">MODEL ALIGNMENT</div>
-  <div class="cg-card-value" style="color:{_h_color};">{_model_aln:.3f}</div>
-  <div class="cg-card-sub">Média ponderada pelo peso dos gates</div>
-  <div style="margin-top:6px; font-weight:700;">{_h_status}</div>
-</div>""", unsafe_allow_html=True)
-        with _mh_c2:
-            st.markdown(f"""
-<div class="cg-card">
-  <div class="cg-card-title">DISTRIBUIÇÃO</div>
-  <div style="font-size:14px; margin-top:6px;">
-    <div><span style="color:#3fb950;">🟢 Saudável:</span> <b>{_g_healthy}</b></div>
-    <div><span style="color:#d29922;">⚠️ Atenção:</span> <b>{_g_warning}</b></div>
-    <div><span style="color:#f85149;">🔴 Desalinhado:</span> <b>{_g_broken}</b></div>
-  </div>
-  <div class="cg-card-sub" style="margin-top:6px;">Total: {len(calib_rows)} gates</div>
-</div>""", unsafe_allow_html=True)
-        with _mh_c3:
-            st.markdown(f"""
-<div class="cg-card">
-  <div class="cg-card-title">EXTREMOS</div>
-  <div style="font-size:13px; margin-top:6px;">
-    <div><span style="color:#3fb950;">✅ Melhor:</span> <b>{_best["gate"]}</b> <span style="color:#8b949e;">(Δ={_best["diff"]:.3f})</span></div>
-    <div style="margin-top:4px;"><span style="color:#f85149;">🔴 Pior:</span> <b>{_worst["gate"]}</b> <span style="color:#8b949e;">(Δ={_worst["diff"]:.3f})</span></div>
-  </div>
-  <div class="cg-card-sub" style="margin-top:6px;">Média simples: {_simple_mn:.3f}</div>
+<div class="cg-card" style="text-align:center;padding:12px;border-left:4px solid {_aln_color};">
+  <div class="cg-card-title">🎯 MODEL ALIGNMENT</div>
+  <div class="cg-card-value" style="color:{_aln_color};">{_model_aln:.3f}</div>
+  <div class="cg-card-sub">{_aln_badge}</div>
 </div>""", unsafe_allow_html=True)
 
-        st.markdown(f"""
-<div class="cg-card" style="margin-top:8px; padding:10px 16px; font-size:13px;">
-  <span style="color:#8b949e;">Leitura: </span>{_h_interp}
+        # Card 2: Global Confidence
+        _reduction = (1 - _gc_val) * 100
+        if _gc_val >= 0.8:
+            _gc_color, _gc_badge = "#3fb950", "🟢 Normal"
+        elif _gc_val >= 0.5:
+            _gc_color, _gc_badge = "#d29922", f"🟡 Reduzido -{_reduction:.0f}%"
+        else:
+            _gc_color, _gc_badge = "#f85149", f"🔴 Severo -{_reduction:.0f}%"
+
+        with _mon_c2:
+            _aw_enabled = _aw_cfg.get("enabled", False)
+            _gc_disp = f"×{_gc_val:.3f}" if _aw_enabled else "OFF"
+            st.markdown(f"""
+<div class="cg-card" style="text-align:center;padding:12px;border-left:4px solid {_gc_color};">
+  <div class="cg-card-title">⚖️ GLOBAL CONFIDENCE</div>
+  <div class="cg-card-value" style="color:{_gc_color};">{_gc_disp}</div>
+  <div class="cg-card-sub">{_gc_badge if _aw_enabled else "adaptive weights off"}</div>
 </div>""", unsafe_allow_html=True)
 
-    # ── Calibration Alerts ─────────────────────────────────────────────────
+        # Card 3: Kill Switches
+        if _n_extreme == 0:
+            _ks_color, _ks_badge, _ks_val = "#3fb950", "🟢 Nenhum", "0 gates"
+        elif _n_extreme <= 2:
+            _ks_color = "#d29922"
+            _ks_badge = "🟡 Alguns"
+            _ks_val = f"{_n_extreme} gates"
+        else:
+            _ks_color = "#f85149"
+            _ks_badge = "🔴 Múltiplos"
+            _ks_val = f"{_n_extreme} gates"
+
+        with _mon_c3:
+            _ks_names = ", ".join(_kill_gates[:3]) if _kill_gates else "—"
+            st.markdown(f"""
+<div class="cg-card" style="text-align:center;padding:12px;border-left:4px solid {_ks_color};">
+  <div class="cg-card-title">💀 KILL SWITCHES</div>
+  <div class="cg-card-value" style="color:{_ks_color};">{_ks_val}</div>
+  <div class="cg-card-sub">{_ks_badge}: {_ks_names}</div>
+</div>""", unsafe_allow_html=True)
+
+        # Leitura interpretativa
+        if _model_aln >= _th_warning or _gc_val < 0.5:
+            st.warning("⚠️ Bot 1 com capacidade reduzida. Considerar recalibrar gates em 2-4 semanas.")
+        elif _model_aln >= _th_healthy or _gc_val < 0.8:
+            st.info("ℹ️ Bot 1 com leve degradação. Monitorar evolução.")
+        else:
+            st.success("✅ Bot 1 saudável. Gates alinhados com correlações configuradas.")
+
+        # ── Detalhes completos em expander ─────────────────────────────────
+        with st.expander("🔍 Detalhes completos (Calibration + Adaptive por gate)", expanded=False):
+
+            # Calibration Alerts
+            st.markdown("**📐 Calibration Alerts (rolling 30d corr vs parameters.yml)**")
+            _cal_rows = sorted(calib_rows, key=lambda x: -x["diff"])
+            _cal_data = []
+            for r in _cal_rows:
+                icon = "🔴" if r["diff"] > 0.25 else ("⚠️" if r["diff"] > 0.15 else "✅")
+                _cal_data.append({
+                    "": icon,
+                    "Gate": r["gate"],
+                    "corr_cfg": f"{r['corr_cfg']:+.3f}",
+                    "corr_30d": f"{r['corr_30d']:+.3f}",
+                    "Δ": f"{r['diff']:.3f}",
+                    "n": r["n"],
+                })
+            if _cal_data:
+                st.dataframe(pd.DataFrame(_cal_data), use_container_width=True, hide_index=True)
+
+            # Adaptive Weights detail
+            if _adaptive_details:
+                st.markdown("**⚖️ Adaptive Weights por Gate**")
+                _aw_data = []
+                for _gkey, _d in sorted(_adaptive_details.items(), key=lambda x: x[1].get("delta") or 0, reverse=True):
+                    _ks = _d.get("kill_status", "ok")
+                    _cf = _d.get("confidence", 0)
+                    icon = "⛔" if _ks == "extreme" else ("⚠️" if _ks == "severe" else ("🟡" if _cf < 0.8 else "✅"))
+                    _aw_data.append({
+                        "": icon,
+                        "Gate": _d.get("gate", _gkey),
+                        "Base": f"{_d.get('base_weight', 0):.2f}",
+                        "Eff":  f"{_d.get('effective_weight', 0):.2f}",
+                        "Conf": f"{_cf:.2f}",
+                        "Δ":    f"{_d.get('delta') or 0:.3f}",
+                        "cfg":  f"{_d.get('corr_cfg') or 0:+.3f}",
+                        "real": f"{_d.get('corr_long') or 0:+.3f}",
+                    })
+                if _aw_data:
+                    st.dataframe(pd.DataFrame(_aw_data), use_container_width=True, hide_index=True)
+
+                # Mini summary
+                _mean_conf = float(np.mean([d.get("confidence", 0) for d in _adaptive_details.values()]))
+                _n_ok  = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "ok" and d.get("confidence", 0) > 0.8)
+                _n_red = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "ok" and d.get("confidence", 0) <= 0.8)
+                _n_sev = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "severe")
+                _sc1, _sc2, _sc3, _sc4, _sc5 = st.columns(5)
+                _sc1.metric("Mean Conf", f"{_mean_conf:.2f}")
+                _sc2.metric("✅ OK", _n_ok)
+                _sc3.metric("🟡 Reduced", _n_red)
+                _sc4.metric("⚠️ Severe", _n_sev)
+                _sc5.metric("⛔ Extreme", _n_extreme)
+
+    # ── PERFORMANCE MONITORING (Bots 2/3/4) ───────────────────────────────────
     st.markdown("---")
-    st.markdown("**📐 Calibration Alerts (rolling 30d corr vs parameters.yml)**")
+    st.markdown("### 📊 Performance Monitoring")
+    st.caption("Saúde de performance dos bots momentum-based (Bot 1 tem monitoring próprio acima)")
 
-    if _calib_error:
-        st.caption(f"Calibration error: {_calib_error}")
-    elif not calib_rows:
-        st.caption("Dados insuficientes para calibração (< 10 dias)")
-    else:
-        for r in sorted(calib_rows, key=lambda x: -x["diff"]):
-            icon  = "🔴" if r["diff"] > 0.25 else ("⚠️" if r["diff"] > 0.15 else "✅")
-            color = "color:#f85149;" if r["diff"] > 0.25 else ("color:#d29922;" if r["diff"] > 0.15 else "")
-            st.markdown(
-                f'<span style="{color}">{icon} {r["gate"]}: corr_cfg={r["corr_cfg"]:+.3f} '
-                f'corr_30d={r["corr_30d"]:+.3f} Δ={r["diff"]:.3f} (n={r["n"]})</span>',
-                unsafe_allow_html=True,
-            )
+    # Expected Sharpe from backtests
+    _EXPECTED_SHARPE = {"bot2": 2.71, "bot3": 0.64, "bot4": 2.03}
 
-    # ── Adaptive Weights ───────────────────────────────────────────────────
-    st.markdown("---")
-    st.markdown("### ⚖️ Adaptive Weights")
-    st.caption("Pesos efetivos: confidence weighting + kill switch graduado (G3–G10 only)")
+    def _compute_bot_health(trades_df, expected_sharpe=None):
+        if trades_df.empty:
+            return {"status": "⏳", "label": "Sem trades", "n": 0}
+        n = len(trades_df)
+        rets = trades_df["return_pct"].astype(float)
+        wins = int((rets > 0).sum())
+        wr   = wins / n * 100
+        total_ret = float(((1 + rets / 100).prod() - 1) * 100)
+        if n < 10:
+            return {"status": "⏳", "label": f"Início (n={n})", "n": n, "wr": wr, "total": total_ret,
+                    "msg": f"{10-n} trades para análise completa"}
+        gross_win  = float(rets[rets > 0].sum())
+        gross_loss = float(abs(rets[rets <= 0].sum()))
+        pf  = gross_win / gross_loss if gross_loss > 0 else 99.0
+        equity = (1 + rets / 100).cumprod()
+        dd  = float((equity / equity.cummax() - 1).min() * 100)
+        sharpe = None
+        if n >= 20 and rets.std() > 0:
+            sharpe = float((rets.mean() / rets.std()) * (252 ** 0.5))
+        # health classification
+        if wr < 40 or dd < -10 or (sharpe is not None and sharpe < 0):
+            status, label = "🔴", "Crítico"
+        elif wr < 50 or dd < -5 or (sharpe is not None and expected_sharpe and sharpe < expected_sharpe * 0.5):
+            status, label = "🟡", "Atenção"
+        else:
+            status, label = "🟢", "Saudável"
+        msg_parts = []
+        if sharpe is not None and expected_sharpe:
+            msg_parts.append(f"Sharpe {sharpe:.2f} ({sharpe/expected_sharpe*100:.0f}% do backtest {expected_sharpe:.2f})")
+        if dd < -3:
+            msg_parts.append(f"DD {dd:.1f}%")
+        msg = " | ".join(msg_parts) if msg_parts else "Performance alinhada com expectativa"
+        return {"status": status, "label": label, "n": n, "wr": wr, "pf": pf, "dd": dd,
+                "sharpe": sharpe, "total": total_ret, "msg": msg}
 
-    _aw_cfg = _params.get("adaptive_weights", {})
-    _adaptive_details = portfolio.get("last_adaptive_weights", {})
+    def _load_bot_trades(asset, bot_key):
+        """Load trades for a given asset/bot."""
+        path_map = {"btc": "data/05_output/trades.parquet",
+                    "eth": "data/05_output/trades_eth.parquet",
+                    "sol": "data/05_output/trades_sol.parquet"}
+        df = load_parquet(path_map.get(asset, "data/05_output/trades.parquet"))
+        if df.empty:
+            return df
+        if "entry_bot" in df.columns:
+            df = df[df["entry_bot"] == bot_key]
+        return df.reset_index(drop=True)
 
-    if not _aw_cfg.get("enabled", False):
-        st.info("Adaptive weights desabilitado — usando pesos base do parameters.yml")
-    elif not _adaptive_details:
-        st.caption("Adaptive weights não computados ainda (aguardando próximo ciclo)")
-    else:
-        # ── Global Confidence Card ────────────────────────────────────────
-        _gc_val = portfolio.get("last_global_confidence_multiplier", 1.0) or 1.0
-        _gc_src = portfolio.get("last_global_confidence_source", "") or ""
-        _gc_bar_color = "#3fb950" if _gc_val > 0.8 else "#d29922" if _gc_val > 0.5 else "#f85149"
-        _gc_status_txt = (
-            "🟢 Sistema alinhado — operação normal" if _gc_val > 0.8
-            else "🟡 Sistema parcialmente alinhado — scoring reduzido" if _gc_val > 0.5
-            else "🔴 Sistema desalinhado — scoring muito reduzido, menos trades esperados"
-        )
-        st.markdown(f"""
-<div class="cg-card" style="border-left:5px solid {_gc_bar_color}; padding:14px 18px; margin-bottom:12px;">
-  <div style="display:flex; justify-content:space-between; align-items:center;">
-    <div>
-      <div class="cg-card-title">⚡ GLOBAL CONFIDENCE MULTIPLIER</div>
-      <div style="font-size:26px; font-weight:700; color:{_gc_bar_color};">×{_gc_val:.3f}</div>
-      <div class="cg-card-sub">Score total × {_gc_val:.3f} — {_gc_src}</div>
-    </div>
-    <div style="text-align:right; font-size:12px; color:#8b949e; max-width:55%;">{_gc_status_txt}</div>
-  </div>
-</div>""", unsafe_allow_html=True)
+    _perf_bots = [
+        {"key": "bot2", "emoji": "🚀", "name": "BOT 2 - Momentum (BTC)", "asset": "btc",
+         "open_port": None},
+        {"key": "bot3", "emoji": "⚡", "name": "BOT 3 - Volume Defensivo (ETH)", "asset": "eth",
+         "open_port": _eth_port if "_eth_port" in dir() else {}},
+        {"key": "bot4", "emoji": "🟣", "name": "BOT 4 - Taker/Flow (SOL)",  "asset": "sol",
+         "open_port": _sol_port if "_sol_port" in dir() else {}},
+    ]
 
-        _n_ok      = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "ok" and d.get("confidence", 0) > 0.8)
-        _n_reduced = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "ok" and d.get("confidence", 0) <= 0.8)
-        _n_severe  = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "severe")
-        _n_extreme = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "extreme")
-        _mean_conf = float(np.mean([d.get("confidence", 0) for d in _adaptive_details.values()])) if _adaptive_details else 0.0
+    for _pb in _perf_bots:
+        st.markdown(f"#### {_pb['emoji']} {_pb['name']}")
+        _pt = _load_bot_trades(_pb["asset"], _pb["key"])
+        _ph = _compute_bot_health(_pt, _EXPECTED_SHARPE.get(_pb["key"]))
 
-        aw_c1, aw_c2, aw_c3, aw_c4, aw_c5 = st.columns(5)
-        with aw_c1:
-            _conf_color = "#3fb950" if _mean_conf > 0.7 else "#d29922" if _mean_conf > 0.4 else "#f85149"
-            st.markdown(f"""
-<div class="cg-card" style="text-align:center;">
-  <div class="cg-card-title">MEAN CONFIDENCE</div>
-  <div class="cg-card-value" style="color:{_conf_color};">{_mean_conf:.2f}</div>
-</div>""", unsafe_allow_html=True)
-        with aw_c2:
-            st.markdown(f"""
-<div class="cg-card" style="text-align:center;">
-  <div class="cg-card-title">✅ OK</div>
-  <div class="cg-card-value pos">{_n_ok}</div>
-  <div class="cg-card-sub">conf &gt; 0.8</div>
-</div>""", unsafe_allow_html=True)
-        with aw_c3:
-            st.markdown(f"""
-<div class="cg-card" style="text-align:center;">
-  <div class="cg-card-title">🟡 REDUCED</div>
-  <div class="cg-card-value warn">{_n_reduced}</div>
-  <div class="cg-card-sub">conf ≤ 0.8</div>
-</div>""", unsafe_allow_html=True)
-        with aw_c4:
-            st.markdown(f"""
-<div class="cg-card" style="text-align:center;">
-  <div class="cg-card-title">⚠️ SEVERE</div>
-  <div class="cg-card-value" style="color:#d29922;">{_n_severe}</div>
-  <div class="cg-card-sub">weight × 0.3</div>
-</div>""", unsafe_allow_html=True)
-        with aw_c5:
-            st.markdown(f"""
-<div class="cg-card" style="text-align:center;">
-  <div class="cg-card-title">⛔ EXTREME</div>
-  <div class="cg-card-value neg">{_n_extreme}</div>
-  <div class="cg-card-sub">weight = 0</div>
-</div>""", unsafe_allow_html=True)
-
-        st.markdown("**Detalhe por Gate:**")
-        _sorted_aw = sorted(
-            _adaptive_details.items(),
-            key=lambda x: x[1].get("delta") or 0,
-            reverse=True,
-        )
-        for _gkey, _d in _sorted_aw:
-            _aw_name   = _d.get("gate", _gkey)
-            _aw_base   = _d.get("base_weight", 0)
-            _aw_eff    = _d.get("effective_weight", 0)
-            _aw_conf   = _d.get("confidence", 0)
-            _aw_status = _d.get("kill_status", "ok")
-            _aw_delta  = _d.get("delta")
-            _aw_ccfg   = _d.get("corr_cfg")
-            _aw_clong  = _d.get("corr_long")
-
-            if _aw_status == "extreme":
-                _aw_icon, _aw_color = "⛔", "#f85149"
-            elif _aw_status == "severe":
-                _aw_icon, _aw_color = "⚠️", "#d29922"
-            elif _aw_conf < 0.5:
-                _aw_icon, _aw_color = "🟡", "#d29922"
-            elif _aw_conf > 0.8:
-                _aw_icon, _aw_color = "✅", "#3fb950"
+        if _ph["n"] == 0:
+            # Check for open position
+            _op = _pb.get("open_port") or {}
+            if _op.get("has_position"):
+                _ep_v = _op.get("entry_price", 0)
+                st.info(f"⏳ Nenhum trade fechado — posição aberta: ${_ep_v:,.2f} (paper). Aguardando primeiro fechamento.")
             else:
-                _aw_icon, _aw_color = "🟡", "#d29922"
+                st.info("⏳ Aguardando primeiro trade.")
+        else:
+            _pc = st.columns(4)
+            _pc[0].metric("Trades", _ph["n"])
+            _wr_delta = f"🟢 OK" if _ph["wr"] >= 50 else "🔴 Baixo"
+            _pc[1].metric("Win Rate", f"{_ph['wr']:.1f}%", delta=_wr_delta, delta_color="off")
+            if "pf" in _ph:
+                _pf_d = "∞" if _ph["pf"] >= 99 else f"{_ph['pf']:.2f}"
+                _pc[2].metric("Profit Factor", _pf_d)
+            else:
+                _pc[2].metric("Avg Return", f"{_ph.get('avg', 0):+.2f}%")
+            if _ph.get("sharpe") is not None:
+                _pc[3].metric("Sharpe (anual)", f"{_ph['sharpe']:.2f}",
+                              delta=f"{_ph['sharpe']/_EXPECTED_SHARPE[_pb['key']]*100:.0f}% do backtest" if _pb["key"] in _EXPECTED_SHARPE else None,
+                              delta_color="off")
+            else:
+                _pc[3].metric("Total Retorno", f"{_ph['total']:+.2f}%")
 
-            _aw_delta_s = f"{_aw_delta:.3f}" if _aw_delta is not None else "—"
-            _aw_creal_s = f"{_aw_clong:+.3f}" if _aw_clong is not None else "—"
-            _aw_ccfg_s  = f"{_aw_ccfg:+.3f}" if _aw_ccfg is not None else "—"
-
-            st.markdown(f"""
-<div class="cg-card" style="padding:6px 14px; font-size:12px; margin-bottom:3px; border-left:3px solid {_aw_color};">
-  {_aw_icon} <b>{_aw_name}</b>
-  &nbsp;|&nbsp; <span style="color:#8b949e;">Base:</span> {_aw_base:.2f}
-  &nbsp;|&nbsp; <span style="color:#8b949e;">Eff:</span> <b>{_aw_eff:.2f}</b>
-  &nbsp;|&nbsp; <span style="color:#8b949e;">Conf:</span> {_aw_conf:.2f}
-  &nbsp;|&nbsp; <span style="color:#8b949e;">Δ:</span> {_aw_delta_s}
-  &nbsp;|&nbsp; <span style="color:#8b949e;">cfg/real:</span> {_aw_ccfg_s} / {_aw_creal_s}
-</div>""", unsafe_allow_html=True)
+            _status_fn = {"🔴": st.error, "🟡": st.warning, "🟢": st.success}.get(_ph["status"], st.info)
+            _status_fn(f"{_ph['status']} {_ph['label']} — {_ph['msg']}")
 
     # SECTION 8: PAPER TRADING — REMOVIDO (trades exibidos em Bot 1/Bot 2 acima)
     # Variáveis necessárias para Safety Status abaixo
