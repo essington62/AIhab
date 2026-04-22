@@ -957,7 +957,7 @@ def main():
     # =========================================================================
     # SECTION 2: GATE SCORING
     # =========================================================================
-    st.markdown("### Gate Scoring v2")
+    st.markdown("### BOT 1 - Conservador")
 
     # Score bar — color driven by signal_computed (kill switches already applied)
     score_pct = min(max((total_score / threshold) * 100, 0), 110) if threshold > 0 else 0
@@ -1072,7 +1072,122 @@ def main():
 </div>""", unsafe_allow_html=True)
 
     # =========================================================================
-    # SECTION 3: AI ANALYST (DeepSeek)
+    # SECTION 3: BOT 1 TRADES HISTORY
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 📊 Histórico Bot 1 — Trades")
+    st.caption("Trades baseados no Gate Scoring acima")
+
+    _th_hist = load_parquet("data/05_output/trades.parquet")
+
+    def _filter_b1(df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return pd.DataFrame()
+        if "entry_bot" not in df.columns:
+            return df.copy()
+        return df[df["entry_bot"] == "bot1"].copy()
+
+    _b1h = _filter_b1(_th_hist)
+
+    # ── Posição aberta (se houver) ─────────────────────────────────────────
+    _pos_open = portfolio.get("has_position", False)
+    _ep_open  = portfolio.get("entry_price")
+    _sl_open  = portfolio.get("stop_loss_price")
+    _tp_open  = portfolio.get("take_profit_price")
+    _tr_open  = portfolio.get("trailing_high")
+    _et_open  = portfolio.get("entry_time")
+    _bot_open = portfolio.get("entry_bot", "bot1")
+
+    if _pos_open and _bot_open in ("bot1", None, "") and _ep_open:
+        _ur_pct = ((price / _ep_open) - 1) * 100
+        _ur_c   = "pos" if _ur_pct >= 0 else "neg"
+        _et_str = pd.to_datetime(_et_open).strftime("%m/%d %H:%M") if _et_open else "?"
+        _sl_str = f"${_sl_open:,.0f}" if _sl_open else "—"
+        _tp_str = f"${_tp_open:,.0f}" if _tp_open else "—"
+        _tr_str = f"${_tr_open:,.0f}" if _tr_open else "—"
+        st.markdown(f"""
+<div class="cg-card" style="padding:8px 16px; font-size:12px; border-left:3px solid #3fb950; margin-bottom:6px;">
+  <span style="color:#3fb950; font-weight:700;">🟢 POSIÇÃO ABERTA</span>
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Entrada:</span> ${_ep_open:,.0f} ({_et_str})
+  &nbsp;|&nbsp; <span style="color:#8b949e;">SL:</span> {_sl_str}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">TP:</span> {_tp_str}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Trail High:</span> {_tr_str}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Atual:</span> ${price:,.0f}
+  &nbsp;|&nbsp; <span class="{_ur_c}" style="font-weight:700;">{_ur_pct:+.2f}%</span>
+</div>""", unsafe_allow_html=True)
+
+    # ── Histórico de trades completados ────────────────────────────────────
+    if not _b1h.empty:
+        _b1h_disp = _b1h.copy()
+
+        # Calcular preços absolutos de SL/TP a partir dos percentuais salvos
+        def _price_from_pct(row, pct_col, direction=1):
+            ep = row.get("entry_price", 0) or 0
+            pct = row.get(pct_col, 0) or 0
+            return ep * (1 + direction * pct) if ep else None
+
+        _b1h_disp["SL $"]       = _b1h_disp.apply(lambda r: _price_from_pct(r, "actual_stop_loss_pct", -1), axis=1)
+        _b1h_disp["TP $"]       = _b1h_disp.apply(lambda r: _price_from_pct(r, "actual_take_profit_pct", 1), axis=1)
+        _b1h_disp["Trail High"] = _b1h_disp.apply(
+            lambda r: (r.get("entry_price", 0) or 0) * (1 + (r.get("mfe_pct", 0) or 0) / 100), axis=1
+        )
+
+        _exit_emoji = {
+            "TP": "🎯 TP", "SL": "🛑 SL", "TRAILING": "📉 Trail",
+            "MAX_HOLD": "⏰ MaxHold", "bot2_timeout": "⏰ MaxHold",
+            "OI_EARLY_EXIT": "🚨 OI",
+        }
+
+        for _, _t in _b1h_disp.sort_values("entry_time", ascending=False).head(10).iterrows():
+            _et  = pd.to_datetime(_t.get("entry_time"))
+            _xt  = pd.to_datetime(_t.get("exit_time"))
+            _ets = _et.strftime("%m/%d %H:%M") if pd.notna(_et) else "?"
+            _xts = _xt.strftime("%m/%d %H:%M") if pd.notna(_xt) else "?"
+            _ret = _t.get("return_pct", 0) or 0
+            _rc  = "pos" if _ret > 0 else "neg"
+            _ep  = _t.get("entry_price", 0) or 0
+            _xp  = _t.get("exit_price", 0) or 0
+            _xr  = _exit_emoji.get(_t.get("exit_reason", ""), _t.get("exit_reason", "?"))
+            _sl  = _t.get("SL $")
+            _tp  = _t.get("TP $")
+            _th  = _t.get("Trail High")
+            _dur = _t.get("duration_hours", 0) or 0
+            _sc  = _t.get("entry_score_adjusted", 0) or 0
+            _sl_s = f"${_sl:,.0f}" if _sl and _sl > 0 else "—"
+            _tp_s = f"${_tp:,.0f}" if _tp and _tp > 0 else "—"
+            _th_s = f"${_th:,.0f}" if _th and _th > _ep else "—"
+            st.markdown(f"""
+<div class="cg-card" style="padding:8px 16px; font-size:12px; margin-bottom:3px;">
+  <span style="color:#8b949e;">{_ets} → {_xts} ({_dur:.0f}h)</span>
+  &nbsp;|&nbsp; <span style="color:#8b949e;">In:</span> ${_ep:,.0f}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">SL:</span> {_sl_s}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">TP:</span> {_tp_s}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Trail:</span> {_th_s}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Out:</span> ${_xp:,.0f} <span style="color:#8b949e;">({_xr})</span>
+  &nbsp;|&nbsp; <span class="{_rc}" style="font-weight:700;">{_ret:+.2f}%</span>
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Score:</span> {_sc:+.3f}
+</div>""", unsafe_allow_html=True)
+    else:
+        st.info("Nenhum trade Bot 1 completado ainda.")
+
+    # ── Métricas rápidas ───────────────────────────────────────────────────
+    if not _b1h.empty:
+        _m1 = compute_bot_metrics(_b1h)
+        if _m1["n_trades"] < 3:
+            st.caption("⚠️ Métricas preliminares — mínimo recomendado: 20 trades.")
+        _mc = st.columns(5)
+        _mc[0].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">TRADES</div><div style="font-size:16px;font-weight:700;">{_m1["n_trades"]}</div><div class="cg-card-sub">{_m1["wins"]}W / {_m1["losses"]}L</div></div>', unsafe_allow_html=True)
+        _wr_c = "pos" if _m1["win_rate"] >= 50 else "neg"
+        _mc[1].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">WIN RATE</div><div class="cg-card-value {_wr_c}">{_m1["win_rate"]:.0f}%</div></div>', unsafe_allow_html=True)
+        _pf_c = "pos" if _m1["profit_factor"] >= 1.0 else "neg"
+        _pf_v = "∞" if _m1["profit_factor"] >= 99 else f'{_m1["profit_factor"]:.2f}'
+        _mc[2].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">PROFIT FACTOR</div><div class="cg-card-value {_pf_c}">{_pf_v}</div></div>', unsafe_allow_html=True)
+        _tr_c = "pos" if _m1["total_return"] >= 0 else "neg"
+        _mc[3].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">RETORNO</div><div class="cg-card-value {_tr_c}">{_m1["total_return"]:+.2f}%</div></div>', unsafe_allow_html=True)
+        _mc[4].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">MAX DD</div><div class="cg-card-value neg">{_m1["max_drawdown"]:.2f}%</div></div>', unsafe_allow_html=True)
+
+    # =========================================================================
+    # SECTION 4: AI ANALYST (DeepSeek)
     # =========================================================================
     st.markdown("---")
     st.markdown("### 🤖 AI Analyst (DeepSeek)")
@@ -1169,48 +1284,55 @@ def main():
         st.markdown('</div>', unsafe_allow_html=True)
 
     # =========================================================================
-    # SECTION 4: WHALE TRACKING
+    # SECTION 4: WHALE TRACKING — DESABILITADO TEMPORARIAMENTE
     # =========================================================================
-    st.markdown("---")
-    st.markdown("### 🐋 Whale Tracking")
-    col_w1, col_w2 = st.columns([1, 2])
-
-    with col_w1:
-        ws_c = "neg" if "🔴" in ws_label else ("pos" if "🟢" in ws_label else "neut")
-        lsa_delta = ""
-        if len(lsa_df) > 24:
-            lsa_prev = lsa_df["longShortRatio"].iloc[-25]
-            lsa_d = (ls_account_val - lsa_prev)
-            lsa_delta = f"({lsa_d:+.3f} vs 24h)"
-        lsp_c = "pos" if (ls_position_val or 1) > 1.0 else "neg"
-        st.markdown(f"""
-<div class="cg-card">
-  <div class="cg-card-title">Top Accounts L/S Ratio</div>
-  <div class="cg-card-value {ws_c}">{ls_account_val:.3f} {lsa_delta}</div>
-  <div class="cg-card-sub">Top Positions: <span class="{lsp_c}">{ls_position_val:.3f}</span></div>
-  <div class="cg-card-interp"><strong>{ws_label}</strong><br>{ws_text}</div>
-</div>""", unsafe_allow_html=True)
-
-    with col_w2:
-        if not lsa_df.empty and len(lsa_df) > 48:
-            lsa_7d = lsa_df.tail(168)
-            spot_7d = spot_df.tail(168) if not spot_df.empty else pd.DataFrame()
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
-            fig.add_trace(go.Scatter(
-                x=lsa_7d["timestamp"], y=lsa_7d["longShortRatio"],
-                name="L/S Accounts", line=dict(color=BLUE, width=1.5)
-            ), secondary_y=False)
-            if not spot_7d.empty:
-                fig.add_trace(go.Scatter(
-                    x=spot_7d["timestamp"], y=spot_7d["close"],
-                    name="BTC Price", line=dict(color=AMBER, width=1.5, dash="dot")
-                ), secondary_y=True)
-            fig.add_hline(y=1.0, line_dash="dash", line_color=GREY, opacity=0.4)
-            fig.update_layout(**PLOTLY, height=200, showlegend=True,
-                              legend=dict(orientation="h", y=1.1))
-            fig.update_yaxes(title_text="L/S Ratio", secondary_y=False)
-            fig.update_yaxes(title_text="BTC $", secondary_y=True)
-            st.plotly_chart(fig, use_container_width=True)
+    # TODO (futuro): reativar após validação estatística do L/S ratio.
+    # Análise pendente:
+    #   - Correlação L/S ratio vs forward returns (estilo SOL EDA Phase 1)
+    #   - Cohen's d em shocks ±2σ
+    #   - Se |corr| > 0.1 e p < 0.05 → considerar gate no Bot 1 ou Bot 4
+    # Código preservado abaixo — não deletar.
+    #
+    # ENABLE_WHALE_TRACKING = False
+    #
+    # st.markdown("---")
+    # st.markdown("### 🐋 Whale Tracking")
+    # col_w1, col_w2 = st.columns([1, 2])
+    # with col_w1:
+    #     ws_c = "neg" if "🔴" in ws_label else ("pos" if "🟢" in ws_label else "neut")
+    #     lsa_delta = ""
+    #     if len(lsa_df) > 24:
+    #         lsa_prev = lsa_df["longShortRatio"].iloc[-25]
+    #         lsa_d = (ls_account_val - lsa_prev)
+    #         lsa_delta = f"({lsa_d:+.3f} vs 24h)"
+    #     lsp_c = "pos" if (ls_position_val or 1) > 1.0 else "neg"
+    #     st.markdown(f"""
+    # <div class="cg-card">
+    #   <div class="cg-card-title">Top Accounts L/S Ratio</div>
+    #   <div class="cg-card-value {ws_c}">{ls_account_val:.3f} {lsa_delta}</div>
+    #   <div class="cg-card-sub">Top Positions: <span class="{lsp_c}">{ls_position_val:.3f}</span></div>
+    #   <div class="cg-card-interp"><strong>{ws_label}</strong><br>{ws_text}</div>
+    # </div>""", unsafe_allow_html=True)
+    # with col_w2:
+    #     if not lsa_df.empty and len(lsa_df) > 48:
+    #         lsa_7d = lsa_df.tail(168)
+    #         spot_7d = spot_df.tail(168) if not spot_df.empty else pd.DataFrame()
+    #         fig = make_subplots(specs=[[{"secondary_y": True}]])
+    #         fig.add_trace(go.Scatter(
+    #             x=lsa_7d["timestamp"], y=lsa_7d["longShortRatio"],
+    #             name="L/S Accounts", line=dict(color=BLUE, width=1.5)
+    #         ), secondary_y=False)
+    #         if not spot_7d.empty:
+    #             fig.add_trace(go.Scatter(
+    #                 x=spot_7d["timestamp"], y=spot_7d["close"],
+    #                 name="BTC Price", line=dict(color=AMBER, width=1.5, dash="dot")
+    #             ), secondary_y=True)
+    #         fig.add_hline(y=1.0, line_dash="dash", line_color=GREY, opacity=0.4)
+    #         fig.update_layout(**PLOTLY, height=200, showlegend=True,
+    #                           legend=dict(orientation="h", y=1.1))
+    #         fig.update_yaxes(title_text="L/S Ratio", secondary_y=False)
+    #         fig.update_yaxes(title_text="BTC $", secondary_y=True)
+    #         st.plotly_chart(fig, use_container_width=True)
 
     # =========================================================================
     # SECTION 5: DERIVATIVES
@@ -2127,68 +2249,9 @@ def main():
   <span style="color:#8b949e;">Desde: </span>{entry_time}
 </div>""", unsafe_allow_html=True)
 
-    # ── Trade history Bot 1 ────────────────────────────────────────────────
-    def _filter_trades_by_bot(df: pd.DataFrame, bot: str) -> pd.DataFrame:
-        if df.empty:
-            return pd.DataFrame()
-        if "entry_bot" not in df.columns:
-            return df.copy() if bot == "bot1" else pd.DataFrame()
-        return df[df["entry_bot"] == bot].copy()
-
+    # ── Trade history Bot 1 — ver seção "📊 Histórico Bot 1" acima ────────
     _trades_hist = load_parquet("data/05_output/trades.parquet")
-    _bot1_trades = _filter_trades_by_bot(_trades_hist, "bot1")
-
-    if not _bot1_trades.empty:
-        st.markdown("**Histórico de Trades — Bot 1**")
-        for _, _t in _bot1_trades.iterrows():
-            _et = pd.to_datetime(_t.get("entry_time"))
-            _xt = pd.to_datetime(_t.get("exit_time"))
-            _entry_ts = _et.strftime("%m/%d %H:%M") if pd.notna(_et) else "?"
-            _exit_ts  = _xt.strftime("%m/%d %H:%M") if pd.notna(_xt) else "?"
-            _ret      = _t.get("return_pct", 0) or 0
-            _ret_c    = "pos" if _ret > 0 else "neg"
-            _ep       = _t.get("entry_price", 0) or 0
-            _xp       = _t.get("exit_price", 0) or 0
-            _xrsn     = _t.get("exit_reason", "?")
-            _dur      = _t.get("duration_hours", 0) or 0
-            _rsi_e    = _t.get("entry_rsi", 0) or 0
-            _bb_e     = _t.get("entry_bb_pct", 0) or 0
-            _score_e  = _t.get("entry_score_adjusted", 0) or 0
-            st.markdown(f"""
-<div class="cg-card" style="padding:8px 16px; font-size:12px; margin-bottom:4px;">
-  <span style="color:#8b949e;">{_entry_ts} → {_exit_ts} ({_dur:.0f}h)</span>
-  &nbsp;|&nbsp; <span style="color:#8b949e;">Entrada:</span> ${_ep:,.0f}
-  &nbsp;|&nbsp; <span style="color:#8b949e;">Saída:</span> ${_xp:,.0f} ({_xrsn})
-  &nbsp;|&nbsp; <span class="{_ret_c}" style="font-weight:700;">{_ret:+.2f}%</span>
-  &nbsp;|&nbsp; <span style="color:#8b949e;">Score:</span> {_score_e:+.3f}
-  &nbsp;|&nbsp; <span style="color:#8b949e;">RSI:</span> {_rsi_e:.1f}
-  &nbsp;|&nbsp; <span style="color:#8b949e;">BB:</span> {_bb_e:.3f}
-</div>""", unsafe_allow_html=True)
-    else:
-        st.info("Nenhum trade Bot 1 completado ainda.")
-
-    # ── Bot 1 Metrics ──────────────────────────────────────────────────────
-    if not _bot1_trades.empty:
-        m1 = compute_bot_metrics(_bot1_trades)
-        if m1["n_trades"] < 3:
-            st.caption("⚠️ Métricas preliminares — mínimo recomendado: 20 trades para avaliação confiável.")
-        _m1c = st.columns(6)
-        with _m1c[0]:
-            st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">TRADES</div><div style="font-size:18px;font-weight:700;">{m1["n_trades"]}</div><div class="cg-card-sub">{m1["wins"]}W / {m1["losses"]}L</div></div>', unsafe_allow_html=True)
-        with _m1c[1]:
-            _wr1c = "pos" if m1["win_rate"] >= 50 else "neg"
-            st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">WIN RATE</div><div class="cg-card-value {_wr1c}">{m1["win_rate"]:.0f}%</div></div>', unsafe_allow_html=True)
-        with _m1c[2]:
-            _pf1c = "pos" if m1["profit_factor"] >= 1.0 else "neg"
-            _pf1v = "∞" if m1["profit_factor"] >= 99 else f'{m1["profit_factor"]:.2f}'
-            st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">PROFIT FACTOR</div><div class="cg-card-value {_pf1c}">{_pf1v}</div></div>', unsafe_allow_html=True)
-        with _m1c[3]:
-            _tr1c = "pos" if m1["total_return"] >= 0 else "neg"
-            st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">RETORNO</div><div class="cg-card-value {_tr1c}">{m1["total_return"]:+.2f}%</div></div>', unsafe_allow_html=True)
-        with _m1c[4]:
-            st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">MAX DD</div><div class="cg-card-value neg">{m1["max_drawdown"]:.2f}%</div></div>', unsafe_allow_html=True)
-        with _m1c[5]:
-            st.markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">AVG DURAÇÃO</div><div style="font-size:18px;font-weight:700;">{m1["avg_duration_hours"]:.0f}h</div></div>', unsafe_allow_html=True)
+    _bot1_trades = _b1h  # reutiliza filtro já computado na seção de trades acima
 
     # ── Equity curve ───────────────────────────────────────────────────────
     if not cycle_log_df.empty and "capital_usd" in cycle_log_df.columns and len(cycle_log_df) > 2:
