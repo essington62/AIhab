@@ -10,6 +10,7 @@ PARAMS_ENABLED = {
         "rsi_min": 50,
         "bb_pct_max": 0.98,
         "require_above_ma21": True,
+        "news_score_min": -1.0,
     }
 }
 
@@ -225,3 +226,44 @@ class TestSpikeGuard:
         )
         assert r["passed"] is False
         assert "LATE_SPIKE" in r["reason"]
+
+
+class TestMomentumFilterNews:
+    """News filter tests for Bot 2."""
+
+    def test_bearish_news_blocks_entry(self):
+        r = check_momentum_filter(_tech(), _zscores(), PARAMS_ENABLED, news_crypto_score=-1.5)
+        assert r["passed"] is False
+        assert "BEARISH_NEWS" in r["reason"]
+
+    def test_neutral_news_passes(self):
+        r = check_momentum_filter(_tech(), _zscores(), PARAMS_ENABLED, news_crypto_score=0.0)
+        assert r["passed"] is True
+
+    def test_positive_news_passes(self):
+        r = check_momentum_filter(_tech(), _zscores(), PARAMS_ENABLED, news_crypto_score=1.5)
+        assert r["passed"] is True
+
+    def test_news_exactly_at_threshold_passes(self):
+        """news_crypto_score == -1.0 should pass (check is <, not <=)."""
+        r = check_momentum_filter(_tech(), _zscores(), PARAMS_ENABLED, news_crypto_score=-1.0)
+        assert r["passed"] is True
+
+    def test_slightly_below_threshold_blocks(self):
+        r = check_momentum_filter(_tech(), _zscores(), PARAMS_ENABLED, news_crypto_score=-1.01)
+        assert r["passed"] is False
+        assert "BEARISH_NEWS" in r["reason"]
+
+    def test_news_combined_with_other_failures(self):
+        r = check_momentum_filter(
+            _tech(rsi=40), _zscores(stable_z=0.5), PARAMS_ENABLED, news_crypto_score=-2.0
+        )
+        assert r["passed"] is False
+        assert "BEARISH_NEWS" in r["reason"]
+        assert "LOW_LIQUIDITY" in r["reason"]
+        assert "RSI_LOW" in r["reason"]
+
+    def test_default_news_score_is_neutral(self):
+        """Without news_crypto_score arg, default 0.0 should pass."""
+        r = check_momentum_filter(_tech(), _zscores(), PARAMS_ENABLED)
+        assert r["passed"] is True

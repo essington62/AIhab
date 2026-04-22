@@ -220,6 +220,11 @@ momentum_filter:
     max_consecutive_sl: 3
     consecutive_sl_pause_hours: 24
 
+  # News filter: bloqueia entrada se notícias muito bearish
+  # Bot 2 compra momentum — news bearish contradiz a tese
+  # Mais conservador que o kill switch do Bot 1 (-3.0)
+  news_score_min: -1.0
+
   # Anti-spike guard: bloqueia entrada tardia em rally já estendido
   # Se ret_1d > spike_ret_max E RSI > spike_rsi_max → LATE_SPIKE → não entra
   spike_guard:

@@ -1262,12 +1262,17 @@ def main():
     _f_bb   = _b2_chk(_bb2,  lambda v: v < _bb_max,  lambda v: v < _bb_max + 0.02)
     _f_ma21 = (_above_ma21, "✅" if _above_ma21 else "❌")
 
+    # News filter
+    _news_min = load_params().get("momentum_filter", {}).get("news_score_min", -1.0)
+    _news_val = float(crypto_ns) if crypto_ns is not None else 0.0
+    _f_news = _b2_chk(_news_val, lambda v: v >= _news_min, lambda v: v >= _news_min - 0.5)
+
     # Spike guard extra: ret_1d > 3% AND RSI > 65 → entrada tardia
     _spike_block = bool(_r1d and _rsi2 and _r1d > _spike_ret_max and _rsi2 > _spike_rsi_max)
 
-    _filters = [_f_sz, _f_r1d, _f_rsi, _f_bb, _f_ma21]
+    _filters = [_f_sz, _f_r1d, _f_rsi, _f_bb, _f_ma21, _f_news]
     _n_pass  = sum(1 for passed, _ in _filters if passed)
-    _all_ok  = _n_pass == 5 and not _spike_block
+    _all_ok  = _n_pass == 6 and not _spike_block
 
     # ── Status header ──────────────────────────────────────────────────────
     _b2_enabled = load_params().get("momentum_filter", {}).get("enabled", False)
@@ -1276,7 +1281,7 @@ def main():
     elif _spike_block:
         st.warning(f"🛑 SPIKE GUARD — ret_1d={_r1d*100:+.1f}% > 3% + RSI={_rsi2:.0f} > 65 → entrada tardia bloqueada")
     elif _all_ok:
-        st.success(f"✅ ENTRY ELEGÍVEL — {_n_pass}/5 filtros passam")
+        st.success(f"✅ ENTRY ELEGÍVEL — {_n_pass}/6 filtros passam")
     else:
         _fail_names = []
         if not _f_sz[0]:    _fail_names.append("stablecoin")
@@ -1284,10 +1289,11 @@ def main():
         if not _f_rsi[0]:   _fail_names.append("RSI")
         if not _f_bb[0]:    _fail_names.append("BB top")
         if not _f_ma21[0]:  _fail_names.append("MA21")
-        st.warning(f"🛑 BLOCK — {_n_pass}/5 filtros ({', '.join(_fail_names)} {'⚠️ borderline' if any('⚠️' in b for _, b in _filters) else 'falhou'})")
+        if not _f_news[0]:  _fail_names.append("news bearish")
+        st.warning(f"🛑 BLOCK — {_n_pass}/6 filtros ({', '.join(_fail_names)} {'⚠️ borderline' if any('⚠️' in b for _, b in _filters) else 'falhou'})")
 
-    # ── 5 filter cards ─────────────────────────────────────────────────────
-    _fc = st.columns(5)
+    # ── 6 filter cards ─────────────────────────────────────────────────────
+    _fc = st.columns(6)
 
     def _card(col, icon, label, val_str, badge, threshold_str, color_class):
         col.markdown(f"""
@@ -1303,11 +1309,13 @@ def main():
     _bb_str   = f"{_bb2:.3f}" if _bb2 is not None else "N/A"
     _ma21_str = "ACIMA" if _above_ma21 else "ABAIXO"
 
-    _card(_fc[0], "💧", "Stablecoin Z",  _sz_str,   _f_sz[1],   f"> {_sz_min}",  "pos" if _f_sz[0] else "neg")
-    _card(_fc[1], "📈", "Momentum 24h",  _r1d_str,  _f_r1d[1],  "> 0%",          "pos" if _f_r1d[0] else "neg")
-    _card(_fc[2], "📊", "RSI",           _rsi_str,  _f_rsi[1],  f"> {_rsi_min}", "pos" if _f_rsi[0] else "neg")
-    _card(_fc[3], "🎯", "BB (não top)",  _bb_str,   _f_bb[1],   f"< {_bb_max}",  "pos" if _f_bb[0] else "neg")
-    _card(_fc[4], "🔄", "Trend MA21",    _ma21_str, _f_ma21[1], "close > MA21",  "pos" if _f_ma21[0] else "neg")
+    _news_str = f"{_news_val:+.2f}" if _news_val is not None else "N/A"
+    _card(_fc[0], "💧", "Stablecoin Z",  _sz_str,   _f_sz[1],   f"> {_sz_min}",    "pos" if _f_sz[0] else "neg")
+    _card(_fc[1], "📈", "Momentum 24h",  _r1d_str,  _f_r1d[1],  "> 0%",            "pos" if _f_r1d[0] else "neg")
+    _card(_fc[2], "📊", "RSI",           _rsi_str,  _f_rsi[1],  f"> {_rsi_min}",   "pos" if _f_rsi[0] else "neg")
+    _card(_fc[3], "🎯", "BB (não top)",  _bb_str,   _f_bb[1],   f"< {_bb_max}",    "pos" if _f_bb[0] else "neg")
+    _card(_fc[4], "🔄", "Trend MA21",    _ma21_str, _f_ma21[1], "close > MA21",    "pos" if _f_ma21[0] else "neg")
+    _card(_fc[5], "📰", "News",          _news_str, _f_news[1], f">= {_news_min}", "pos" if _f_news[0] else "neg")
 
     # ── Posição Bot 2 aberta (se houver) ──────────────────────────────────
     _bot_open2 = portfolio.get("entry_bot")

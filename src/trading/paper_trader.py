@@ -554,7 +554,7 @@ def check_cooldown(portfolio: dict, current_price: float, bot: str, params: dict
 # Reversal filter (entry confirmation — applied after scoring says ENTER)
 # ---------------------------------------------------------------------------
 
-def check_momentum_filter(technical: dict, zscores: dict, params: dict) -> dict:
+def check_momentum_filter(technical: dict, zscores: dict, params: dict, news_crypto_score: float = 0.0) -> dict:
     """
     Bot 2 — Momentum/Liquidez filter.
     Entry when stablecoin liquidity is flowing in + market in uptrend.
@@ -566,6 +566,7 @@ def check_momentum_filter(technical: dict, zscores: dict, params: dict) -> dict:
       3. RSI > 50 (bullish zone)
       4. close > MA21 (short-term uptrend)
       5. BB% < 0.98 (not a blow-off top)
+      6. news_crypto_score >= -1.0 (no strong bearish news)
     """
     mf = params.get("momentum_filter", {})
 
@@ -584,6 +585,7 @@ def check_momentum_filter(technical: dict, zscores: dict, params: dict) -> dict:
     rsi_min = mf.get("rsi_min", 50)
     bb_max = mf.get("bb_pct_max", 0.98)
     require_ma21 = mf.get("require_above_ma21", True)
+    news_min = mf.get("news_score_min", -1.0)
 
     result = {
         "stablecoin_z": stablecoin_z,
@@ -596,6 +598,8 @@ def check_momentum_filter(technical: dict, zscores: dict, params: dict) -> dict:
         "ret_min": ret_min,
         "rsi_min": rsi_min,
         "bb_max": bb_max,
+        "news_crypto_score": news_crypto_score,
+        "news_min": news_min,
     }
 
     if stablecoin_z is None or ret_1d is None or rsi is None or bb_pct is None:
@@ -624,6 +628,9 @@ def check_momentum_filter(technical: dict, zscores: dict, params: dict) -> dict:
 
     if require_ma21 and close <= ma_21:
         reasons.append(f"BELOW_MA21 (close={close:.0f} <= MA21={ma_21:.0f})")
+
+    if news_crypto_score < news_min:
+        reasons.append(f"BEARISH_NEWS (news={news_crypto_score:.2f} < {news_min})")
 
     spike_cfg = mf.get("spike_guard", {})
     if spike_cfg.get("enabled", False):
@@ -1176,9 +1183,9 @@ def run_cycle() -> dict:
                         logger.info(f"BOT2 CM BLOCKED: {cm_check_b2['reason']}")
                         mf_check = {"passed": False, "reason": cm_check_b2["reason"], "stablecoin_z": None}
                     else:
-                        mf_check = check_momentum_filter(technical, zscores, params)
+                        mf_check = check_momentum_filter(technical, zscores, params, news_crypto_score)
                 else:
-                    mf_check = check_momentum_filter(technical, zscores, params)
+                    mf_check = check_momentum_filter(technical, zscores, params, news_crypto_score)
 
             # Inject volume_z from technical into mf_check for dynamic TP
             if isinstance(mf_check, dict):
@@ -1202,7 +1209,7 @@ def run_cycle() -> dict:
                 logger.info(
                     f"BOT2 ENTRY CONFIRMED: stablecoin_z={mf_check['stablecoin_z']:.2f} | "
                     f"ret_1d={mf_check['ret_1d']:.4f} | RSI={mf_check['rsi']:.1f} | "
-                    f"BB={mf_check['bb_pct']:.3f}"
+                    f"BB={mf_check['bb_pct']:.3f} | news={news_crypto_score:.2f}"
                 )
                 # SHADOW MODE: avalia filtro taker_z sem bloquear (FASE 4)
                 try:
