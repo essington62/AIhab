@@ -1187,6 +1187,182 @@ def main():
         _mc[4].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">MAX DD</div><div class="cg-card-value neg">{_m1["max_drawdown"]:.2f}%</div></div>', unsafe_allow_html=True)
 
     # =========================================================================
+    # SECTION 3b: BOT 2 — MOMENTUM
+    # =========================================================================
+    st.markdown("---")
+    st.markdown("### 🚀 BOT 2 - Momentum")
+    st.caption("Filosofia: momentum alimentado por liquidez. Entra com stablecoin fuel + trend + sem blow-off.")
+
+    # ── Valores atuais (todos já carregados no escopo) ─────────────────────
+    _sz   = last_zs.get("stablecoin_z") if not zs_df.empty else None
+    _r1d  = pct_24h / 100  # ret_1d = pct_24h / 100 (pct_24h já em %)
+    _rsi2 = rsi_14
+    _bb2  = bb_pct
+    _ma21 = _latest(spot_df, "ma_21", 0.0) if not spot_df.empty else 0.0
+    _above_ma21 = bool(price and _ma21 and price > _ma21)
+
+    # Thresholds reais de parameters.yml
+    _sz_min  = 1.3
+    _r1d_min = 0.0
+    _rsi_min = 50
+    _bb_max  = 0.98   # bloqueia se >= 0.98 (anti blow-off top)
+    _spike_ret_max = 0.03
+    _spike_rsi_max = 65
+
+    # ── Helper: check individual filter ────────────────────────────────────
+    def _b2_chk(val, ok_condition, border_condition=None):
+        """Returns (passed, badge_html) with ✅/⚠️/❌."""
+        if val is None:
+            return False, "⚪"
+        if ok_condition(val):
+            return True, "✅"
+        if border_condition and border_condition(val):
+            return False, "⚠️"
+        return False, "❌"
+
+    _f_sz   = _b2_chk(_sz,   lambda v: v > _sz_min,  lambda v: v > _sz_min - 0.3)
+    _f_r1d  = _b2_chk(_r1d,  lambda v: v > _r1d_min, lambda v: v > -0.005)
+    _f_rsi  = _b2_chk(_rsi2, lambda v: _rsi_min < v < 85, lambda v: (_rsi_min - 5) < v < 90)
+    _f_bb   = _b2_chk(_bb2,  lambda v: v < _bb_max,  lambda v: v < _bb_max + 0.02)
+    _f_ma21 = (_above_ma21, "✅" if _above_ma21 else "❌")
+
+    # Spike guard extra: ret_1d > 3% AND RSI > 65 → entrada tardia
+    _spike_block = bool(_r1d and _rsi2 and _r1d > _spike_ret_max and _rsi2 > _spike_rsi_max)
+
+    _filters = [_f_sz, _f_r1d, _f_rsi, _f_bb, _f_ma21]
+    _n_pass  = sum(1 for passed, _ in _filters if passed)
+    _all_ok  = _n_pass == 5 and not _spike_block
+
+    # ── Status header ──────────────────────────────────────────────────────
+    _b2_enabled = _params.get("momentum_filter", {}).get("enabled", False)
+    if not _b2_enabled:
+        st.info("⏸️ Bot 2 desabilitado (momentum_filter.enabled: false em parameters.yml)")
+    elif _spike_block:
+        st.warning(f"🛑 SPIKE GUARD — ret_1d={_r1d*100:+.1f}% > 3% + RSI={_rsi2:.0f} > 65 → entrada tardia bloqueada")
+    elif _all_ok:
+        st.success(f"✅ ENTRY ELEGÍVEL — {_n_pass}/5 filtros passam")
+    else:
+        _fail_names = []
+        if not _f_sz[0]:    _fail_names.append("stablecoin")
+        if not _f_r1d[0]:   _fail_names.append("momentum")
+        if not _f_rsi[0]:   _fail_names.append("RSI")
+        if not _f_bb[0]:    _fail_names.append("BB top")
+        if not _f_ma21[0]:  _fail_names.append("MA21")
+        st.warning(f"🛑 BLOCK — {_n_pass}/5 filtros ({', '.join(_fail_names)} {'⚠️ borderline' if any('⚠️' in b for _, b in _filters) else 'falhou'})")
+
+    # ── 5 filter cards ─────────────────────────────────────────────────────
+    _fc = st.columns(5)
+
+    def _card(col, icon, label, val_str, badge, threshold_str, color_class):
+        col.markdown(f"""
+<div class="cg-card" style="text-align:center; padding:10px 6px;">
+  <div class="cg-card-title">{icon} {label}</div>
+  <div class="cg-card-value {color_class}" style="font-size:20px;">{val_str} {badge}</div>
+  <div class="cg-card-sub">{threshold_str}</div>
+</div>""", unsafe_allow_html=True)
+
+    _sz_str   = f"{_sz:.2f}" if _sz is not None else "N/A"
+    _r1d_str  = f"{_r1d*100:+.2f}%" if _r1d is not None else "N/A"
+    _rsi_str  = f"{_rsi2:.1f}" if _rsi2 is not None else "N/A"
+    _bb_str   = f"{_bb2:.3f}" if _bb2 is not None else "N/A"
+    _ma21_str = "ACIMA" if _above_ma21 else "ABAIXO"
+
+    _card(_fc[0], "💧", "Stablecoin Z",  _sz_str,   _f_sz[1],   f"> {_sz_min}",  "pos" if _f_sz[0] else "neg")
+    _card(_fc[1], "📈", "Momentum 24h",  _r1d_str,  _f_r1d[1],  "> 0%",          "pos" if _f_r1d[0] else "neg")
+    _card(_fc[2], "📊", "RSI",           _rsi_str,  _f_rsi[1],  f"> {_rsi_min}", "pos" if _f_rsi[0] else "neg")
+    _card(_fc[3], "🎯", "BB (não top)",  _bb_str,   _f_bb[1],   f"< {_bb_max}",  "pos" if _f_bb[0] else "neg")
+    _card(_fc[4], "🔄", "Trend MA21",    _ma21_str, _f_ma21[1], "close > MA21",  "pos" if _f_ma21[0] else "neg")
+
+    # ── Posição Bot 2 aberta (se houver) ──────────────────────────────────
+    _bot_open2 = portfolio.get("entry_bot")
+    _has_pos2  = portfolio.get("has_position", False) and _bot_open2 == "bot2"
+    if _has_pos2:
+        _ep2  = portfolio.get("entry_price", 0)
+        _sl2  = portfolio.get("stop_loss_price")
+        _tp2  = portfolio.get("take_profit_price")
+        _tr2  = portfolio.get("trailing_high")
+        _et2  = portfolio.get("entry_time")
+        _ur2  = ((price / _ep2) - 1) * 100 if _ep2 else 0
+        _urc2 = "pos" if _ur2 >= 0 else "neg"
+        _et2s = pd.to_datetime(_et2).strftime("%m/%d %H:%M") if _et2 else "?"
+        st.markdown(f"""
+<div class="cg-card" style="padding:8px 16px; font-size:12px; border-left:3px solid #3fb950; margin-top:8px;">
+  <span style="color:#3fb950; font-weight:700;">🟢 POSIÇÃO ABERTA (Bot 2)</span>
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Entrada:</span> ${_ep2:,.0f} ({_et2s})
+  &nbsp;|&nbsp; <span style="color:#8b949e;">SL:</span> {"$"+f"{_sl2:,.0f}" if _sl2 else "—"}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">TP:</span> {"$"+f"{_tp2:,.0f}" if _tp2 else "—"}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Trail:</span> {"$"+f"{_tr2:,.0f}" if _tr2 else "—"}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Atual:</span> ${price:,.0f}
+  &nbsp;|&nbsp; <span class="{_urc2}" style="font-weight:700;">{_ur2:+.2f}%</span>
+</div>""", unsafe_allow_html=True)
+
+    # ── Histórico trades Bot 2 ─────────────────────────────────────────────
+    st.markdown("**Histórico Bot 2 — Trades**")
+    _b2h = _th_hist[_th_hist["entry_bot"] == "bot2"].copy() if (
+        not _th_hist.empty and "entry_bot" in _th_hist.columns
+    ) else pd.DataFrame()
+
+    if not _b2h.empty:
+        _exit_emoji2 = {
+            "TP": "🎯 TP", "SL": "🛑 SL", "TRAILING": "📉 Trail",
+            "MAX_HOLD": "⏰ MaxHold", "bot2_timeout": "⏰ MaxHold",
+        }
+        _b2h["_sl_price"] = _b2h.apply(
+            lambda r: (r.get("entry_price", 0) or 0) * (1 - (r.get("actual_stop_loss_pct", 0) or 0)), axis=1)
+        _b2h["_tp_price"] = _b2h.apply(
+            lambda r: (r.get("entry_price", 0) or 0) * (1 + (r.get("actual_take_profit_pct", 0) or 0)), axis=1)
+        _b2h["_th_price"] = _b2h.apply(
+            lambda r: (r.get("entry_price", 0) or 0) * (1 + (r.get("mfe_pct", 0) or 0) / 100), axis=1)
+
+        for _, _t in _b2h.sort_values("entry_time", ascending=False).head(10).iterrows():
+            _et  = pd.to_datetime(_t.get("entry_time"))
+            _xt  = pd.to_datetime(_t.get("exit_time"))
+            _ets = _et.strftime("%m/%d %H:%M") if pd.notna(_et) else "?"
+            _xts = _xt.strftime("%m/%d %H:%M") if pd.notna(_xt) else "?"
+            _ret = _t.get("return_pct", 0) or 0
+            _rc  = "pos" if _ret > 0 else "neg"
+            _ep  = _t.get("entry_price", 0) or 0
+            _xp  = _t.get("exit_price", 0) or 0
+            _dur = _t.get("duration_hours", 0) or 0
+            _xr  = _exit_emoji2.get(_t.get("exit_reason", ""), _t.get("exit_reason", "?"))
+            _sl  = _t.get("_sl_price", 0)
+            _tp  = _t.get("_tp_price", 0)
+            _th  = _t.get("_th_price", 0)
+            _sz2 = _t.get("entry_stablecoin_z", 0) or 0
+            _sl_s = f"${_sl:,.0f}" if _sl and _sl > 0 else "—"
+            _tp_s = f"${_tp:,.0f}" if _tp and _tp > 0 else "—"
+            _th_s = f"${_th:,.0f}" if _th and _th > _ep else "—"
+            st.markdown(f"""
+<div class="cg-card" style="padding:8px 16px; font-size:12px; margin-bottom:3px;">
+  <span style="color:#8b949e;">{_ets} → {_xts} ({_dur:.0f}h)</span>
+  &nbsp;|&nbsp; <span style="color:#8b949e;">In:</span> ${_ep:,.0f}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">SL:</span> {_sl_s}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">TP:</span> {_tp_s}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Trail:</span> {_th_s}
+  &nbsp;|&nbsp; <span style="color:#8b949e;">Out:</span> ${_xp:,.0f} <span style="color:#8b949e;">({_xr})</span>
+  &nbsp;|&nbsp; <span class="{_rc}" style="font-weight:700;">{_ret:+.2f}%</span>
+  &nbsp;|&nbsp; <span style="color:#8b949e;">StbZ:</span> {_sz2:.2f}
+</div>""", unsafe_allow_html=True)
+
+        # Métricas resumo Bot 2
+        if not _b2h.empty:
+            _m2 = compute_bot_metrics(_b2h)
+            if _m2["n_trades"] < 3:
+                st.caption("⚠️ Métricas preliminares — mínimo 20 trades para avaliação confiável.")
+            _mc2 = st.columns(5)
+            _mc2[0].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">TRADES</div><div style="font-size:16px;font-weight:700;">{_m2["n_trades"]}</div><div class="cg-card-sub">{_m2["wins"]}W / {_m2["losses"]}L</div></div>', unsafe_allow_html=True)
+            _wr2c = "pos" if _m2["win_rate"] >= 50 else "neg"
+            _mc2[1].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">WIN RATE</div><div class="cg-card-value {_wr2c}">{_m2["win_rate"]:.0f}%</div></div>', unsafe_allow_html=True)
+            _pf2c = "pos" if _m2["profit_factor"] >= 1.0 else "neg"
+            _pf2v = "∞" if _m2["profit_factor"] >= 99 else f'{_m2["profit_factor"]:.2f}'
+            _mc2[2].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">PROFIT FACTOR</div><div class="cg-card-value {_pf2c}">{_pf2v}</div></div>', unsafe_allow_html=True)
+            _tr2c = "pos" if _m2["total_return"] >= 0 else "neg"
+            _mc2[3].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">RETORNO</div><div class="cg-card-value {_tr2c}">{_m2["total_return"]:+.2f}%</div></div>', unsafe_allow_html=True)
+            _mc2[4].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">MAX DD</div><div class="cg-card-value neg">{_m2["max_drawdown"]:.2f}%</div></div>', unsafe_allow_html=True)
+    else:
+        st.info("Nenhum trade Bot 2 completado ainda.")
+
+    # =========================================================================
     # SECTION 4: AI ANALYST (DeepSeek)
     # =========================================================================
     st.markdown("---")
