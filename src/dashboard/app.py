@@ -1806,29 +1806,20 @@ def main():
   <div class="cg-card-sub">z={zs.get('fg_z',0):.2f}</div>
 </div>""", unsafe_allow_html=True)
 
-        st.markdown(f"""
-<div class="cg-card" style="margin-top:8px;">
-  <div class="cg-card-title">🏦 Fed Sentinel</div>
-  <div style="font-size:13px; margin-top:4px;">
-    <div>Próx evento: <b>{fomc.get('next_event','N/A')}</b></div>
-    <div>Em: <b>{fomc.get('days_away','—')} dias</b></div>
-    <div>Proximity adj: <b>+{fomc.get('proximity_adj',0):.1f}</b></div>
-    <div>Blackout: <b>{'Sim ⚠️' if fomc.get('in_blackout') else 'Não'}</b></div>
-  </div>
-</div>""", unsafe_allow_html=True)
+
 
     # =========================================================================
-    # SECTION 9: FED OBSERVATORY
+    # SECTION 9: FED SENTINEL (consolidado — Observatory + Sentinel)
     # =========================================================================
     st.markdown("---")
-    st.markdown("### 🏛️ Fed Observatory")
+    st.markdown("### 🏛️ Fed Sentinel")
     st.caption("Probabilidades estimadas (proxy DGS2, não FedWatch)")
 
     try:
         from src.features.fed_observatory import load_fed_data, estimate_rate_probability, get_scenario_analysis
 
         _fed_data = load_fed_data()
-        _prob = estimate_rate_probability(_fed_data)
+        _prob     = estimate_rate_probability(_fed_data)
         _analysis = get_scenario_analysis(_prob)
 
         # --- Probability cards ---
@@ -1838,7 +1829,7 @@ def main():
             _col = "#3fb950" if _pct > 30 else "#8b949e"
             st.markdown(f"""
 <div class="cg-card">
-  <div class="cg-card-title">CORTE 25bps</div>
+  <div class="cg-card-title">🟢 CORTE 25bps</div>
   <div class="cg-card-value" style="color:{_col};">{_pct:.0f}%</div>
   <div class="cg-card-sub">BTC: Bullish</div>
 </div>""", unsafe_allow_html=True)
@@ -1847,7 +1838,7 @@ def main():
             _pct = _prob["prob_hold"] * 100
             st.markdown(f"""
 <div class="cg-card">
-  <div class="cg-card-title">MANUTENÇÃO</div>
+  <div class="cg-card-title">🟡 MANUTENÇÃO</div>
   <div class="cg-card-value" style="color:#8b949e;">{_pct:.0f}%</div>
   <div class="cg-card-sub">BTC: Neutro</div>
 </div>""", unsafe_allow_html=True)
@@ -1857,17 +1848,25 @@ def main():
             _col = "#f85149" if _pct > 10 else "#8b949e"
             st.markdown(f"""
 <div class="cg-card">
-  <div class="cg-card-title">ALTA 25bps</div>
+  <div class="cg-card-title">🔴 ALTA 25bps</div>
   <div class="cg-card-value" style="color:{_col};">{_pct:.0f}%</div>
   <div class="cg-card-sub">BTC: Bearish</div>
 </div>""", unsafe_allow_html=True)
+
+        # --- Sentinel status (next event) ---
+        st.markdown("**📅 Próximo evento**")
+        _fs_c1, _fs_c2, _fs_c3, _fs_c4 = st.columns(4)
+        _fs_c1.metric("Evento", fomc.get("next_event", "N/A"))
+        _fs_c2.metric("Em", f"{fomc.get('days_away', '—')} dias")
+        _fs_c3.metric("Proximity adj", f"+{fomc.get('proximity_adj', 0):.1f}")
+        _fs_c4.metric("Blackout", "Sim ⚠️" if fomc.get("in_blackout") else "Não")
 
         # --- Indicators ---
         _ind = _prob.get("indicators", {})
         _ind_cols = st.columns(5)
         _ind_list = [
-            ("DGS2",        _ind.get("dgs2"),         "%",   _ind.get("dgs2_change_30d")),
-            ("EFFR",        _ind.get("effr"),          "%",   None),
+            ("DGS2",          _ind.get("dgs2"),         "%",   _ind.get("dgs2_change_30d")),
+            ("EFFR",          _ind.get("effr"),          "%",   None),
             ("Spread vs Fed", _ind.get("spread_vs_fed"), "bps", None),
             ("Inflation 5Y",  _ind.get("inflation_5y"),  "%",   _ind.get("inflation_5y_change_30d")),
             ("Inflation 10Y", _ind.get("inflation_10y"), "%",   None),
@@ -1879,12 +1878,13 @@ def main():
                         st.metric(_name, f"{_val*100:+.0f}bps")
                     else:
                         st.metric(_name, f"{_val:.2f}%",
-                                  delta=f"{_change:+.2f}" if _change is not None else None)
+                                  delta=f"{_change:+.2f}" if _change is not None else None,
+                                  delta_color="inverse")
                 else:
                     st.metric(_name, "N/A")
 
         # --- Scenarios ---
-        st.markdown("**Cenários por decisão:**")
+        st.markdown("**🎯 Cenários por decisão:**")
         _color_map = {"green": "#3fb950", "gray": "#8b949e", "red": "#f85149"}
         for _sc in _analysis["scenarios"]:
             _bc = _color_map.get(_sc["color"], "#8b949e")
@@ -1898,7 +1898,7 @@ def main():
   <br><span style="font-size:0.8em; color:#6e7681;">{_sc["description"]}</span>
 </div>""", unsafe_allow_html=True)
 
-        # --- Member sentiment (if available) ---
+        # --- Member sentiment ---
         if _analysis.get("member_summary"):
             _ms = _analysis["member_summary"]
             st.markdown(
@@ -1911,17 +1911,16 @@ def main():
 
         # --- Fed agenda ---
         try:
-            import json as _json
             with open("conf/fed_calendar.json") as _f:
-                _cal = _json.load(_f)
+                _cal = json.load(_f)
             _now_ts = pd.Timestamp.now(tz="UTC")
             _all_events = []
             for _d in _cal.get("fomc_decisions", []):
                 _all_events.append({"date": _d, "type": "FOMC Decision"})
             for _e in _cal.get("hearings", []):
-                _all_events.append({"date": _e["date"], "type": f"{_e['type']} ({_e.get('member','')})"})
+                _all_events.append({"date": _e["date"], "type": f"{_e['type']} ({_e.get('member', '')})"})
             for _e in _cal.get("transitions", []):
-                _all_events.append({"date": _e["date"], "type": f"{_e['type']} ({_e.get('member','')})"})
+                _all_events.append({"date": _e["date"], "type": f"{_e['type']} ({_e.get('member', '')})"})
             _upcoming = sorted(
                 [e for e in _all_events if pd.to_datetime(e["date"]) > _now_ts],
                 key=lambda x: x["date"]
@@ -1935,9 +1934,9 @@ def main():
             pass
 
     except Exception as _e:
-        st.warning(f"Fed Observatory indisponível: {_e}")
+        st.warning(f"Fed Sentinel indisponível: {_e}")
 
-    # =========================================================================
+        # =========================================================================
     # SECTION 7: SYSTEM HEALTH
     # =========================================================================
     st.markdown("---")
