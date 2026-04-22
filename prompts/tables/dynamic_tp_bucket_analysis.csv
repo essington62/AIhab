@@ -1,0 +1,4 @@
+bucket,n_trades,pct_total,tp_n,sl_n,trail_n,wr_original,fixed_sharpe,marujo_sharpe,delta_sharpe,fixed_avg_ret,marujo_avg_ret
+normal,118,86.8%,60,39,19,66.9%,2.791,2.791,0.0,+0.608%,+0.608%
+late,1,0.7%,0,0,1,100.0%,0.0,0.0,0.0,+0.183%,+0.183%
+exhaustion,17,12.5%,8,6,3,64.7%,2.22,0.71,-1.509,+0.486%,+0.118%

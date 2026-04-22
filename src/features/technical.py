@@ -159,6 +159,17 @@ def get_latest_technical() -> dict:
     def _f(col):
         return float(latest[col]) if col in latest.index and not pd.isna(latest[col]) else None
 
+    # volume_z: rolling 7d (168h) z-score of current candle volume
+    volume_z = None
+    if "volume" in df.columns and len(df) >= 14:
+        vol_s   = df["volume"].astype(float)
+        vol_win = min(168, len(vol_s))
+        vol_mean = vol_s.rolling(vol_win, min_periods=14).mean()
+        vol_std  = vol_s.rolling(vol_win, min_periods=14).std()
+        vol_z_s  = (vol_s - vol_mean) / vol_std.replace(0, np.nan)
+        _vz = vol_z_s.iloc[-1]
+        volume_z = float(_vz) if not pd.isna(_vz) else None
+
     result = {
         "timestamp":  latest["timestamp"],
         "close":      float(latest["close"]),
@@ -173,6 +184,7 @@ def get_latest_technical() -> dict:
         "high_30d":   _f("high_30d"),
         "low_30d":    _f("low_30d"),
         "ret_1d":     round(ret_1d, 6) if ret_1d is not None else None,
+        "volume_z":   volume_z,
     }
     params = get_params()["technical"]
     for w in params["ma_windows"]:

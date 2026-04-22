@@ -49,6 +49,7 @@ from src.trading.execution import (
     load_portfolio,
     parse_utc,
 )
+from src.trading.dynamic_tp import get_dynamic_tp, log_tp_decision
 from src.trading.shadow_filters import evaluate_taker_z_shadow
 
 logger = logging.getLogger("trading.paper_trader")
@@ -896,8 +897,9 @@ def check_stops_only() -> dict:
 # Bot 2 entry execution
 # ---------------------------------------------------------------------------
 
-def _execute_bot2_entry(current_price: float, portfolio: dict, mf_params: dict) -> dict:
-    """Execute Bot 2 entry with its own fixed stops (not ATR-based)."""
+def _execute_bot2_entry(current_price: float, portfolio: dict,
+                        mf_params: dict, mf_check: dict | None = None) -> dict:
+    """Execute Bot 2 entry with Dynamic TP v2 (context-aware)."""
     params = get_params()["execution"]
     capital = portfolio["capital_usd"]
     size_pct = params["position_size_pct"]
@@ -905,9 +907,15 @@ def _execute_bot2_entry(current_price: float, portfolio: dict, mf_params: dict) 
     position_value = capital * size_pct
     quantity = position_value / current_price
 
-    sl_pct = mf_params.get("stop_loss_pct", 0.015)
-    tp_pct = mf_params.get("take_profit_pct", 0.02)
+    sl_pct    = mf_params.get("stop_loss_pct", 0.015)
     trail_pct = mf_params.get("trailing_stop_pct", 0.01)
+
+    # Dynamic TP v2
+    _rsi    = (mf_check or {}).get("rsi")
+    _bb_pct = (mf_check or {}).get("bb_pct")
+    _vol_z  = (mf_check or {}).get("volume_z")
+    tp_pct, tp_reason = get_dynamic_tp(_rsi, _bb_pct, _vol_z)
+    log_tp_decision(current_price, tp_pct, tp_reason, _rsi, _bb_pct, _vol_z)
 
     portfolio["has_position"] = True
     portfolio["entry_price"] = round(current_price, 2)
@@ -918,13 +926,16 @@ def _execute_bot2_entry(current_price: float, portfolio: dict, mf_params: dict) 
     portfolio["take_profit_price"] = round(current_price * (1 + tp_pct), 2)
     portfolio["trailing_stop_pct_actual"] = trail_pct
     portfolio["stops_mode"] = "bot2_fixed"
+    portfolio["dynamic_tp_pct"] = tp_pct
+    portfolio["tp_reason"] = tp_reason
     portfolio["entry_atr_pct"] = None
     portfolio["last_updated"] = str(pd.Timestamp.utcnow())
 
     atomic_write_json(portfolio, get_path("portfolio_state"))
     logger.info(
         f"BOT2 ENTRY: price={current_price:.2f}, qty={quantity:.6f}, "
-        f"SL={portfolio['stop_loss_price']}, TP={portfolio['take_profit_price']} [bot2_fixed]"
+        f"SL={portfolio['stop_loss_price']}, TP={portfolio['take_profit_price']} "
+        f"[dynamic_tp_{tp_reason}_{tp_pct*100:.0f}%]"
     )
     return portfolio
 
@@ -1169,11 +1180,15 @@ def run_cycle() -> dict:
                 else:
                     mf_check = check_momentum_filter(technical, zscores, params)
 
+            # Inject volume_z from technical into mf_check for dynamic TP
+            if isinstance(mf_check, dict):
+                mf_check["volume_z"] = technical.get("volume_z")
+
             if mf_check["passed"]:
                 mf_params = params.get("momentum_filter", {})
                 if cm_params.get("enabled", False):
                     sync_capital_for_entry(portfolio, "btc_bot2")
-                portfolio = _execute_bot2_entry(current_price, portfolio, mf_params)
+                portfolio = _execute_bot2_entry(current_price, portfolio, mf_params, mf_check)
                 if cm_params.get("enabled", False):
                     sync_entry_to_bucket(portfolio, "btc_bot2")
                 _init_trade_tracking(portfolio, result, regime, technical, zscores)
