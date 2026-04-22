@@ -191,6 +191,9 @@ def get_latest_technical() -> dict:
         col = f"ma_{w}"
         result[col] = _f(col)
 
+    # alias: consumers that look up "rsi" (e.g. dynamic_tp) also work
+    result["rsi"] = result.get("rsi_14")
+
     _ret1d_str = f"{result['ret_1d']:.4f}" if result.get("ret_1d") is not None else "N/A"
     logger.info(
         f"Latest technical: close={result['close']:.2f}, "
