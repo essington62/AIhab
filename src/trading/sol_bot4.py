@@ -240,8 +240,17 @@ def compute_sol_features() -> dict:
 # ENTRY SIGNAL (hard gates)
 # ==================================================================
 
-def check_entry_signal(features: dict, params: dict) -> tuple[bool, list[str]]:
+def check_entry_signal(features: dict, params: dict, portfolio: dict | None = None) -> tuple[bool, list[str]]:
     reasons = []
+
+    # Cooldown check (4h after exit)
+    if portfolio:
+        cooldown_until = portfolio.get("cooldown_until")
+        if cooldown_until:
+            cooldown_ts = pd.to_datetime(cooldown_until, utc=True)
+            if pd.Timestamp.now("UTC") < cooldown_ts:
+                remaining = (cooldown_ts - pd.Timestamp.now("UTC")).total_seconds() / 3600
+                reasons.append(f"cooldown ({remaining:.1f}h remaining)")
 
     # G0: ETH momentum (H3)
     eth_ret = features.get("eth_ret_1h_prev")
@@ -345,7 +354,6 @@ def execute_entry(price: float, features: dict, portfolio: dict, params: dict):
     stops = params["stops"]
     sl_pct = stops["stop_loss_pct"]
     tp_pct = stops["take_profit_pct"]
-    cooldown_h = params.get("cooldown_hours", 4)
 
     qty = portfolio["capital_usd"] / price
     now = datetime.now(timezone.utc)
@@ -359,6 +367,7 @@ def execute_entry(price: float, features: dict, portfolio: dict, params: dict):
         "trailing_high": round(price, 4),
         "entry_timestamp": now.isoformat(),
         "max_hold_until": (now + timedelta(hours=stops["max_hold_hours"])).isoformat(),
+        "cooldown_until": None,  # cleared on entry
         "entry_features": {k: round(v, 6) if isinstance(v, float) else v
                            for k, v in features.items() if k != "timestamp"},
     })
@@ -398,7 +407,11 @@ def execute_exit(exit_price: float, exit_reason: str, portfolio: dict, params: d
     with open(TRADES_PATH, "w") as f:
         json.dump(trades, f, indent=2, default=str)
 
+    cooldown_h = params.get("cooldown_hours", 4)
+    now = datetime.now(timezone.utc)
+
     portfolio["capital_usd"] = round(portfolio["capital_usd"] + pnl_usd, 2)
+    portfolio["cooldown_until"] = (now + timedelta(hours=cooldown_h)).isoformat()
     for key in ["has_position", "entry_price", "quantity", "stop_loss_price",
                 "take_profit_price", "trailing_high", "entry_timestamp",
                 "max_hold_until", "entry_features"]:
@@ -519,7 +532,7 @@ def run_hourly_cycle():
             return
 
         # === No position: check entry ===
-        allowed, reasons = check_entry_signal(features, params)
+        allowed, reasons = check_entry_signal(features, params, portfolio)
 
         # Always log shadow scoring (even on blocks)
         log_shadow_scoring(features, allowed)
