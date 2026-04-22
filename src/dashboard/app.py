@@ -1234,7 +1234,7 @@ def main():
     _all_ok  = _n_pass == 5 and not _spike_block
 
     # ── Status header ──────────────────────────────────────────────────────
-    _b2_enabled = _params.get("momentum_filter", {}).get("enabled", False)
+    _b2_enabled = load_params().get("momentum_filter", {}).get("enabled", False)
     if not _b2_enabled:
         st.info("⏸️ Bot 2 desabilitado (momentum_filter.enabled: false em parameters.yml)")
     elif _spike_block:
