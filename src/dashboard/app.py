@@ -1093,10 +1093,14 @@ def main():
             sub = (f"G6 Bubble: {d.get('g6',0):+.3f} | G8 F&G: {d.get('g8',0):+.3f} | "
                    f"G9 Taker: {d.get('g9',0):+.3f}")
         else:  # news
-            g2r = d.get('g2_raw', 0)
-            cap_note = f" → cap: {sc:+.3f}" if abs(g2r - sc) > 0.005 else ""
-            sub = (f"Crypto {d.get('crypto_score',0):+.2f}×½ + "
-                   f"Fed {d.get('fed_score',0):+.2f}×½ = {g2r:+.3f}{cap_note}")
+            cs_ = d.get('crypto_score', 0)
+            ms_ = d.get('macro_score',  0)
+            fs_ = d.get('fed_score',    0)
+            comb_ = cs_ * 0.4 + ms_ * 0.6
+            g2r   = d.get('g2_raw', 0)
+            cap_note = f" (cap: {sc:+.3f})" if abs(g2r - sc) > 0.005 else ""
+            sub = (f"Crypto: {cs_:+.2f} | Macro: {ms_:+.2f} | Fed: {fs_:+.2f}"
+                   f"<br>Combined = Crypto×0.4 + Macro×0.6 = {comb_:+.3f}{cap_note}")
 
         with cols_c[i % 3]:
             st.markdown(f"""
