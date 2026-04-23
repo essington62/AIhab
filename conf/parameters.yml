@@ -122,7 +122,7 @@ execution:
   atr_multiplier_trail: 1.0    # K_trail: Trailing    = K × ATR%
 
   # Safety clamps for dynamic stops
-  min_stop_loss_pct: 0.01      # SL never < 1%
+  min_stop_loss_pct: 0.02      # SL never < 1%
   max_stop_loss_pct: 0.06      # SL never > 6%
   min_take_profit_pct: 0.01    # TP never < 1%
   max_take_profit_pct: 0.06    # TP never > 6%
