@@ -292,20 +292,60 @@ def build_prompt(ctx: dict, articles: list[dict]) -> str:
    Use edge_4h como métrica primária de decisão.
    edge_24h é contexto de tendência apenas — não determina a classificação sozinho.
 
-6. FLUXO > HEADLINE — quando notícia e fluxo divergirem, preferir o fluxo:
+6. FLUXO > HEADLINE — graduação obrigatória:
 
-   Se notícia BEARISH mas fluxo bullish:
-     OI_z < 0 (desalavancando) E taker_z > 0 (comprando) E ret_4h > 0
+   FLUXO COMPLETO (3 de 3 condições) → fluxo domina:
+     OI_z < 0 (desalavancando)
+     AND taker_z > 0 (comprando)
+     AND ret_4h > 0 (preço confirmando)
      → classificar SIDEWAYS ou BULL
-     Reasoning: "mercado absorveu o headline, fluxo domina"
+     → confidence += 0.1 (bônus convergência)
+     → reasoning: "mercado absorveu headline, fluxo domina"
 
-   Se notícia BULLISH mas fluxo bearish:
-     OI_z > 1.5 (sobreaquecido) E taker_z < 0 (vendendo) E ret_4h < -0.5%
+   FLUXO PARCIAL (2 de 3 condições) → absorção sem confirmação:
+     OI_z < 0 AND taker_z > 0 AND ret_4h <= 0
+     → classificar SIDEWAYS com viés BEAR
+     → confidence -= 0.1 (incerteza maior)
+     → reasoning: "absorção tentando, sem confirmação de preço"
+     → NÃO usar "neutral" — descrever o setup real
+
+   FLUXO BEARISH COMPLETO (3 de 3):
+     OI_z > 1.5 (sobreaquecido)
+     AND taker_z < 0 (vendendo)
+     AND ret_4h < -0.5%
      → classificar SIDEWAYS ou BEAR
-     Reasoning: "headline positivo mas posicionamento deteriora"
+     → reasoning: "headline positivo mas posicionamento deteriora"
 
-   Se alinhados (notícia e fluxo na mesma direção):
-     confidence += 0.1 (bônus de convergência — não exceder 1.0)"""
+   CONVERGÊNCIA (notícia e fluxo alinhados):
+     → confidence += 0.1 (não exceder 1.0)
+
+7. FUNDING_Z — contexto de posicionamento do crowd:
+
+   funding_z < -1.0 → crowd está SHORT (pagando para shortar)
+     → setup de squeeze potencial
+     → sozinho não muda classificação
+     → combinado com taker_z > 0 E OI_z < 0:
+       reforça viés BULL/SIDEWAYS (shorts vão ser forçados a cobrir)
+     → reasoning deve mencionar: "crowd short, squeeze risk"
+
+   funding_z > 1.0 → crowd está LONG (pagando para comprar)
+     → mercado sobreaquecido no lado comprador
+     → combinado com OI_z > 1.5: reforça viés BEAR
+     → reasoning deve mencionar: "longs sobrecarregados"
+
+   funding_z entre -1.0 e +1.0 → neutro, ignorar
+
+8. TAKER_Z — escala de intensidade obrigatória:
+
+   taker_z > 1.5        → compra FORTE — mencionar explicitamente
+   taker_z 0.3 a 1.5   → compra MODERADA — NÃO usar "neutral"
+   taker_z -0.3 a 0.3  → neutro de fato
+   taker_z -0.3 a -1.5 → venda MODERADA — NÃO usar "neutral"
+   taker_z < -1.5       → venda FORTE — mencionar explicitamente
+
+   PROIBIDO: usar a palavra "neutral" para taker_z fora do range -0.3 a +0.3.
+   Se taker_z = +0.41 → descrever como "compra moderada".
+   Se taker_z = -0.80 → descrever como "venda moderada"."""
 
     return f"{bloco_a}\n\n{bloco_b}\n\n{bloco_c}"
 
