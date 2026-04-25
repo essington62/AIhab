@@ -2078,13 +2078,17 @@ def main():
             _ds_color = "#f85149"
             _ds_status = "🔴 crítico"
         st.markdown("**DeepSeek API:**")
+        _ds_err_html = (
+            '<br><span style="color:#d29922;font-size:0.8em;">⚠️ ' + _ds_err[:60] + "</span>"
+            if _ds_err else ""
+        )
         st.markdown(
             f'<div style="border-left:3px solid {_ds_color};padding:6px 10px;margin:4px 0;'
             f'background:rgba(0,0,0,0.15);border-radius:4px;font-size:0.85em;">'
             f'💰 Saldo: <b style="color:{_ds_color};">${_ds_bal:.2f} USD</b> — {_ds_status}<br>'
             f'G2a (chat):&nbsp;&nbsp;ativo<br>'
             f'G2b (R1):&nbsp;&nbsp;&nbsp;&nbsp;shadow mode'
-            f'{"<br><span style=\"color:#d29922;font-size:0.8em;\">⚠️ " + _ds_err[:60] + "</span>" if _ds_err else ""}'
+            f'{_ds_err_html}'
             f'</div>',
             unsafe_allow_html=True,
         )
