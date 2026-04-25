@@ -808,7 +808,7 @@ Gere a análise estruturada em 6 seções conforme instruído no system prompt."
                     {"role": "user",   "content": user_prompt},
                 ],
             },
-            timeout=45,
+            timeout=120,
         )
         resp.raise_for_status()
         data    = resp.json()
@@ -1777,7 +1777,7 @@ def main():
             # Capital
             "capital": capital, "has_position": portfolio.get("has_position", False),
         }
-        with st.spinner("Consultando DeepSeek..."):
+        with st.spinner("Consultando DeepSeek v4-pro (pode levar até 2 min)..."):
             analysis = call_deepseek_analyst(context)
         st.markdown('<div class="cg-card" style="font-size:14px; line-height:1.7;">',
                     unsafe_allow_html=True)
