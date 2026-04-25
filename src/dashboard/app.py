@@ -239,6 +239,26 @@ def get_deepseek_balance() -> dict:
         return {"available": False, "balance_usd": 0.0, "error": str(e)}
 
 
+def load_analyst_context() -> dict | None:
+    """Read conf/analyst_context.json. Returns None if missing."""
+    path = ROOT / "conf/analyst_context.json"
+    if not path.exists():
+        return None
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def save_analyst_context(data: dict) -> None:
+    """Persist analyst context to conf/analyst_context.json with current UTC timestamp."""
+    data["updated_at"] = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M UTC")
+    path = ROOT / "conf/analyst_context.json"
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+
 @st.cache_data(ttl=60)
 def load_sol_trades_json() -> pd.DataFrame:
     """Load SOL trades from JSON (data/05_trades/) and normalize to unified schema."""
@@ -778,7 +798,7 @@ Gere a análise estruturada em 6 seções conforme instruído no system prompt."
             "https://api.deepseek.com/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={
-                "model": "deepseek-v4-flash",
+                "model": "deepseek-v4-pro",
                 "max_tokens": 2000,
                 "temperature": 0.3,
                 "top_p": 0.9,
@@ -2068,6 +2088,104 @@ def main():
             f'</div>',
             unsafe_allow_html=True,
         )
+
+        # ── Analyst Context card ─────────────────────────────────────────
+        st.markdown("**📝 Contexto do Analista:**")
+        _ac = load_analyst_context()
+
+        # Age / expiry display
+        if _ac:
+            try:
+                _ac_ts  = pd.Timestamp(_ac.get("updated_at", ""), tz="UTC")
+                _ac_age = (pd.Timestamp.now(tz="UTC") - _ac_ts).total_seconds() / 3600
+                _ac_exp = max(0.0, 12.0 - _ac_age)
+                _ac_ts_str  = _ac_ts.strftime("%d/%m %H:%M UTC")
+                _ac_ago_str = f"{_ac_age:.1f}h atrás"
+                _exp_str    = f"{int(_ac_exp)}h {int((_ac_exp % 1) * 60):02d}min"
+                if _ac_age < 8:
+                    _ac_hdr_color = "#3fb950"
+                elif _ac_age < 12:
+                    _ac_hdr_color = "#d29922"
+                else:
+                    _ac_hdr_color = "#f85149"
+                st.markdown(
+                    f'<div style="font-size:0.8em;color:{_ac_hdr_color};">'
+                    f'Atualizado: {_ac_ts_str} ({_ac_ago_str}) — Expira em: {_exp_str}'
+                    f'{"  ⚠️ EXPIRADO" if _ac_age >= 12 else ""}</div>',
+                    unsafe_allow_html=True,
+                )
+            except Exception:
+                _ac_age = 99.0
+                _ac_hdr_color = "#f85149"
+
+        # Form fields
+        with st.form("analyst_ctx_form", clear_on_submit=False):
+            _fc1, _fc2, _fc3 = st.columns([1, 1, 2])
+            _bias_opts = ["BEAR", "SIDEWAYS", "BULL"]
+            _conf_opts = ["high", "medium", "low"]
+            _cur_bias  = (_ac or {}).get("bias", "SIDEWAYS")
+            _cur_conf  = (_ac or {}).get("confidence", "medium")
+            _cur_horiz = (_ac or {}).get("horizon", "24-48h")
+            _cur_ctx   = (_ac or {}).get("context", "")
+            _cur_tags  = ", ".join((_ac or {}).get("tags", []))
+
+            with _fc1:
+                _new_bias = st.selectbox("Viés", _bias_opts,
+                    index=_bias_opts.index(_cur_bias) if _cur_bias in _bias_opts else 0,
+                    key="ac_bias")
+            with _fc2:
+                _new_conf = st.selectbox("Confiança", _conf_opts,
+                    index=_conf_opts.index(_cur_conf) if _cur_conf in _conf_opts else 0,
+                    key="ac_conf")
+            with _fc3:
+                _new_horiz = st.text_input("Horizonte", value=_cur_horiz, key="ac_horizon")
+
+            _new_ctx = st.text_area("Percepção", value=_cur_ctx, height=120, key="ac_context")
+            _new_tags_raw = st.text_input("Tags (separadas por vírgula)", value=_cur_tags, key="ac_tags")
+
+            _submitted = st.form_submit_button("💾 Salvar Contexto")
+            if _submitted:
+                _tags_list = [t.strip() for t in _new_tags_raw.split(",") if t.strip()]
+                save_analyst_context({
+                    "author":     "Edmundo",
+                    "horizon":    _new_horiz,
+                    "context":    _new_ctx,
+                    "bias":       _new_bias,
+                    "confidence": _new_conf,
+                    "tags":       _tags_list,
+                })
+                # Next 4h cron fire
+                _now_h = pd.Timestamp.now(tz="UTC").hour
+                _next_h = ((_now_h // 4) + 1) * 4 % 24
+                _mins_to_next = ((_next_h - pd.Timestamp.now(tz="UTC").hour) * 60
+                                 - pd.Timestamp.now(tz="UTC").minute) % (4 * 60)
+                st.success(f"Contexto salvo — próximo ciclo G2b em ~{_mins_to_next} min (às {_next_h:02d}:00 UTC)")
+
+        # Last G2b output
+        try:
+            _nr = pd.read_parquet(ROOT / "data/02_features/news_regime.parquet")
+            if not _nr.empty:
+                _nr_last = _nr.iloc[-1]
+                _nr_ts   = pd.Timestamp(_nr_last.get("timestamp", pd.NaT))
+                _nr_ts_s = _nr_ts.strftime("%H:%M UTC") if not pd.isna(_nr_ts) else "?"
+                _nr_reg  = _nr_last.get("regime_hint", "?")
+                _nr_conf = float(_nr_last.get("confidence", 0))
+                _nr_rsn  = str(_nr_last.get("reasoning", ""))[:80]
+                _nr_abias = _nr_last.get("analyst_bias", None)
+                _nr_reg_color = {"BULL": "#3fb950", "BEAR": "#f85149"}.get(_nr_reg, "#d29922")
+                st.markdown(
+                    f'<div style="font-size:0.8em;border-left:2px solid #444;'
+                    f'padding:4px 8px;margin-top:6px;">'
+                    f'<b>Último G2b ({_nr_ts_s}):</b><br>'
+                    f'Regime: <b style="color:{_nr_reg_color};">{_nr_reg}</b> | '
+                    f'Conf: {_nr_conf:.2f}<br>'
+                    f'Reasoning: <i>"{_nr_rsn}"</i><br>'
+                    f'{"Analyst bias usado: <b>" + str(_nr_abias) + "</b>" if _nr_abias and str(_nr_abias) != "nan" else "Sem analyst bias"}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+        except Exception:
+            pass
 
         # Cron info
         st.markdown("**Cron:**")
