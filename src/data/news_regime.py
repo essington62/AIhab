@@ -201,12 +201,33 @@ def _load_recent_articles(hours: int = NEWS_WINDOW_H) -> list[dict]:
 # Prompt builder
 # ---------------------------------------------------------------------------
 
+def _load_analyst_context() -> dict | None:
+    """Load manual analyst context from JSON. Ignores if older than 12h."""
+    path = Path("conf/analyst_context.json")
+    if not path.exists():
+        return None
+    try:
+        with open(path) as f:
+            ctx = json.load(f)
+        updated = pd.Timestamp(ctx.get("updated_at"), tz="UTC")
+        age_h = (pd.Timestamp.now(tz="UTC") - updated).total_seconds() / 3600
+        if age_h > 12:
+            logger.info(f"analyst_context ignorado — {age_h:.1f}h desatualizado")
+            return None
+        ctx["_age_h"] = age_h
+        return ctx
+    except Exception as e:
+        logger.warning(f"analyst_context load failed: {e}")
+        return None
+
+
 def build_prompt(ctx: dict, articles: list[dict]) -> str:
     """
     Build the full prompt sent to DeepSeek-R1.
-    BLOCO A: system instruction
+    BLOCO A: system instruction (moved to system message in _call_r1)
     BLOCO B: market data + news with event clusters
     BLOCO C: ordered rules
+    BLOCO D: analyst context (optional, expires 12h)
     """
 
     # ── BLOCO A ─────────────────────────────────────────────────────────────
@@ -347,7 +368,32 @@ def build_prompt(ctx: dict, articles: list[dict]) -> str:
    Se taker_z = +0.41 → descrever como "compra moderada".
    Se taker_z = -0.80 → descrever como "venda moderada"."""
 
-    return f"{bloco_a}\n\n{bloco_b}\n\n{bloco_c}"
+    analyst = _load_analyst_context()
+    if analyst:
+        bloco_d = (
+            "\n════════════════════════════════════════════════════════\n"
+            "BLOCO D — CONTEXTO DO ANALISTA (percepção qualitativa)\n"
+            "════════════════════════════════════════════════════════\n"
+            f"Atualizado : {analyst['updated_at']} (válido 12h)\n"
+            f"Autor      : {analyst['author']}\n"
+            f"Horizonte  : {analyst.get('horizon', 'não especificado')}\n"
+            f"Viés       : {analyst['bias']} (confiança: {analyst['confidence']})\n"
+            f"Tags       : {', '.join(analyst.get('tags', []))}\n"
+            "\nPercepção:\n"
+            f"{analyst['context']}\n"
+            "\nINSTRUÇÃO: Este é contexto qualitativo de um analista humano\n"
+            "com acesso a informações não capturadas pelo RSS.\n"
+            "- Pese junto com os dados quantitativos dos BLOCOs A, B e C\n"
+            "- Se reforçar os dados → aumentar confidence em 0.1\n"
+            "- Se conflitar com os dados → explicar o conflito no reasoning\n"
+            "- Se conflitar com as regras obrigatórias → as regras têm prioridade\n"
+            "  mas mencionar o conflito no reasoning\n"
+            "════════════════════════════════════════════════════════"
+        )
+    else:
+        bloco_d = ""
+
+    return f"{bloco_a}\n\n{bloco_b}\n\n{bloco_c}{bloco_d}"
 
 
 # ---------------------------------------------------------------------------
@@ -360,7 +406,23 @@ def _call_r1(prompt: str, api_key: str) -> dict:
         "max_tokens": 8000,
         "temperature": 0,
         "thinking": {"type": "enabled"},
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Você é um analista quantitativo sênior especializado em "
+                    "crypto macro trading. Seu papel é classificar o regime de "
+                    "mercado BTC para as próximas 4h com base em dados de fluxo "
+                    "institucional e notícias macro.\n\n"
+                    "Você é cético por natureza — prefere SIDEWAYS quando há "
+                    "ambiguidade. Nunca alucina dados que não foram fornecidos. "
+                    "Segue as regras fornecidas rigorosamente e em ordem de "
+                    "prioridade. Responde APENAS em JSON válido, sem markdown, "
+                    "sem texto fora do JSON."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
     }
     resp = requests.post(
         DEEPSEEK_URL,
@@ -424,9 +486,10 @@ def _save_result(result: dict) -> None:
 # ---------------------------------------------------------------------------
 
 def run(dry_run: bool = False) -> dict | None:
-    ctx      = _load_market_context()
-    articles = _load_recent_articles()
-    prompt   = build_prompt(ctx, articles)
+    ctx           = _load_market_context()
+    articles      = _load_recent_articles()
+    analyst       = _load_analyst_context()
+    prompt        = build_prompt(ctx, articles)
 
     cluster_counts = Counter(a["event_cluster"] for a in articles)
     n_relevant = sum(cnt for cl, cnt in cluster_counts.items() if cl != "OTHER/UNCATEGORIZED")
@@ -464,13 +527,15 @@ def run(dry_run: bool = False) -> dict | None:
         regime_hint = "SIDEWAYS"
 
     result = {
-        "timestamp":        pd.Timestamp.now(tz="UTC"),
-        "regime_hint":      regime_hint,
-        "confidence":       round(confidence, 3),
-        "reasoning":        reasoning,
-        "n_articles":       len(articles),
-        "n_relevant":       n_relevant,
-        "dominant_cluster": dominant,
+        "timestamp":              pd.Timestamp.now(tz="UTC"),
+        "regime_hint":            regime_hint,
+        "confidence":             round(confidence, 3),
+        "reasoning":              reasoning,
+        "n_articles":             len(articles),
+        "n_relevant":             n_relevant,
+        "dominant_cluster":       dominant,
+        "analyst_bias":           analyst["bias"] if analyst else None,
+        "analyst_context_age_h":  round(analyst["_age_h"], 2) if analyst else None,
     }
 
     logger.info(
