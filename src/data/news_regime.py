@@ -34,7 +34,7 @@ from src.config import get_credential, get_path
 logger = logging.getLogger("data_layer.news_regime")
 
 DEEPSEEK_URL  = "https://api.deepseek.com/chat/completions"
-MODEL_R1      = "deepseek-reasoner"
+MODEL_R1      = "deepseek-v4-flash"
 NEWS_WINDOW_H = 4        # hours of news to consider
 RETENTION     = 8760     # rows cap for output parquet
 
@@ -359,6 +359,7 @@ def _call_r1(prompt: str, api_key: str) -> dict:
         "model": MODEL_R1,
         "max_tokens": 8000,
         "temperature": 0,
+        "thinking": {"type": "enabled"},
         "messages": [{"role": "user", "content": prompt}],
     }
     resp = requests.post(

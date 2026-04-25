@@ -176,7 +176,7 @@ def _call_deepseek(items: list[dict], api_key: str) -> list[dict]:
         for n in items
     )
     payload = {
-        "model": "deepseek-chat",
+        "model": "deepseek-v4-flash",
         "max_tokens": 2000,
         "temperature": 0.1,
         "messages": [{"role": "user", "content": CLASSIFY_PROMPT.format(news_list=news_list)}],

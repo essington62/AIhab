@@ -778,7 +778,7 @@ Gere a análise estruturada em 6 seções conforme instruído no system prompt."
             "https://api.deepseek.com/chat/completions",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
             json={
-                "model": "deepseek-chat",
+                "model": "deepseek-v4-flash",
                 "max_tokens": 2000,
                 "temperature": 0.3,
                 "top_p": 0.9,
