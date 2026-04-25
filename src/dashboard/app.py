@@ -215,6 +215,30 @@ def load_params() -> dict:
     return get_params()
 
 
+@st.cache_data(ttl=3600)
+def get_deepseek_balance() -> dict:
+    """Query DeepSeek balance API. Cached 1h to avoid hammering on every refresh."""
+    try:
+        api_key = get_credential("deepseek_api_key")
+        resp = requests.get(
+            "https://api.deepseek.com/user/balance",
+            headers={"Authorization": f"Bearer {api_key}", "Accept": "application/json"},
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        # Response: {"is_available": bool, "balance_infos": [{"currency": "USD", "total_balance": "...", ...}]}
+        is_available = data.get("is_available", False)
+        balance_usd = 0.0
+        for info in data.get("balance_infos", []):
+            if info.get("currency", "").upper() == "USD":
+                balance_usd = float(info.get("total_balance", 0))
+                break
+        return {"available": is_available, "balance_usd": balance_usd, "error": None}
+    except Exception as e:
+        return {"available": False, "balance_usd": 0.0, "error": str(e)}
+
+
 @st.cache_data(ttl=60)
 def load_sol_trades_json() -> pd.DataFrame:
     """Load SOL trades from JSON (data/05_trades/) and normalize to unified schema."""
@@ -2015,6 +2039,35 @@ def main():
                 stale_list.append(name)
 
         st.markdown(f"**Stale:** {len(stale_list)} fonte(s)" + (f": {', '.join(stale_list)}" if stale_list else " — tudo OK"))
+
+        # DeepSeek balance card
+        _ds = get_deepseek_balance()
+        _ds_bal = _ds["balance_usd"]
+        _ds_avail = _ds["available"]
+        _ds_err = _ds["error"]
+        if _ds_err:
+            _ds_color = "#f85149"
+            _ds_status = "🔴 erro"
+        elif _ds_bal > 1.00:
+            _ds_color = "#3fb950"
+            _ds_status = "✅ disponível"
+        elif _ds_bal > 0.20:
+            _ds_color = "#d29922"
+            _ds_status = "🟡 baixo"
+        else:
+            _ds_color = "#f85149"
+            _ds_status = "🔴 crítico"
+        st.markdown("**DeepSeek API:**")
+        st.markdown(
+            f'<div style="border-left:3px solid {_ds_color};padding:6px 10px;margin:4px 0;'
+            f'background:rgba(0,0,0,0.15);border-radius:4px;font-size:0.85em;">'
+            f'💰 Saldo: <b style="color:{_ds_color};">${_ds_bal:.2f} USD</b> — {_ds_status}<br>'
+            f'G2a (chat):&nbsp;&nbsp;ativo<br>'
+            f'G2b (R1):&nbsp;&nbsp;&nbsp;&nbsp;shadow mode'
+            f'{"<br><span style=\"color:#d29922;font-size:0.8em;\">⚠️ " + _ds_err[:60] + "</span>" if _ds_err else ""}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
 
         # Cron info
         st.markdown("**Cron:**")
