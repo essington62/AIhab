@@ -357,7 +357,7 @@ def build_prompt(ctx: dict, articles: list[dict]) -> str:
 def _call_r1(prompt: str, api_key: str) -> dict:
     payload = {
         "model": MODEL_R1,
-        "max_tokens": 512,
+        "max_tokens": 8000,
         "temperature": 0,
         "messages": [{"role": "user", "content": prompt}],
     }
