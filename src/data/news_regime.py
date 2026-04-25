@@ -368,20 +368,34 @@ def _call_r1(prompt: str, api_key: str) -> dict:
         timeout=90,
     )
     resp.raise_for_status()
-    raw = resp.json()["choices"][0]["message"]["content"]
-    content = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
+    msg = resp.json()["choices"][0]["message"]
 
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        pass
-    m = re.search(r'\{[^{}]+\}', content, re.DOTALL)
-    if m:
+    content   = msg.get("content", "").strip()
+    reasoning = msg.get("reasoning_content", "").strip()
+
+    def _extract_json(text: str) -> dict | None:
+        """Try direct parse first, then regex for last {...} block."""
+        clean = text.replace("```json", "").replace("```", "").strip()
         try:
-            return json.loads(m.group())
+            return json.loads(clean)
         except json.JSONDecodeError:
             pass
-    raise ValueError(f"Cannot parse R1 response: {content[:300]}")
+        # Last JSON object wins (R1 tends to emit it at the end of reasoning)
+        matches = list(re.finditer(r'\{[^{}]+\}', clean, re.DOTALL))
+        for m in reversed(matches):
+            try:
+                return json.loads(m.group())
+            except json.JSONDecodeError:
+                continue
+        return None
+
+    for source in (content, reasoning):
+        if source:
+            result = _extract_json(source)
+            if result is not None:
+                return result
+
+    raise ValueError(f"Cannot parse R1 response — content={content[:100]!r}")
 
 
 # ---------------------------------------------------------------------------
