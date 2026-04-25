@@ -34,7 +34,7 @@ from src.config import get_credential, get_path
 logger = logging.getLogger("data_layer.news_regime")
 
 DEEPSEEK_URL  = "https://api.deepseek.com/chat/completions"
-MODEL_R1      = "deepseek-v4-flash"
+MODEL_R1      = "deepseek-v4-pro"
 NEWS_WINDOW_H = 4        # hours of news to consider
 RETENTION     = 8760     # rows cap for output parquet
 
