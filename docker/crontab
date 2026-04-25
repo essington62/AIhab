@@ -20,6 +20,9 @@ SHELL=/bin/bash
 10 * * * * cd /app && python3 scripts/eth_hourly_cycle.py >> /app/logs/eth_bot3.log 2>&1
 25,40,55 * * * * cd /app && python3 scripts/eth_check_stops.py >> /app/logs/eth_stops.log 2>&1
 
+# G2b news_regime — DeepSeek v4-flash thinking, a cada 4h
+0 */4 * * * cd /app && python -m src.data.news_regime >> /app/logs/news_regime.log 2>&1
+
 # SOL Bot 4 — Taker Aggression + Flow (offset do ETH)
 3 * * * * cd /app && python3 scripts/sol_ingestion.py >> /app/logs/sol_ingestion.log 2>&1
 15 * * * * cd /app && python3 scripts/sol_hourly_cycle.py >> /app/logs/sol_bot4.log 2>&1
