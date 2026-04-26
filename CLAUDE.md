@@ -17,14 +17,14 @@ Nome: AI.hab — Capitão Ahab caçando baleias com inteligência artificial.
 - **Instance ID**: i-06ddcf82415eaff56
 - **Key pair**: aihab-key-sp (~/.ssh/aihab-key-sp.pem no Mac Mini)
 
-## Arquitetura (v1.1 — Gate Scoring + R5C + Fed Sentinel + MA200 Override)
+## Arquitetura (v1.2 — Gate Scoring + R5C + Fed Sentinel + MA200 Override + G2b shadow)
 
 ```
 Ciclo Horário (1h):
     Binance Spot (1h candles) → BB, RSI, MAs
     CoinGlass Futures (4h, ffill→1h) → OI agregado, funding OI-weighted, taker
     Binance Futures (1h) → L/S ratio top accounts/positions (whale tracking)
-    News RSS (crypto + macro + Fed) → DeepSeek classify
+    News RSS (crypto + macro + Fed) → DeepSeek v4-flash classify (G2a)
                 ↓
     Clean (raw → intermediate, resample 1H grid, ffill)
     Gate Features → z-scores de todas as variáveis
@@ -38,6 +38,12 @@ Ciclo Horário (1h):
     ENTER / HOLD / BLOCK
                 ↓
     Execução: stops (SL 2%, SG 1.5%, trailing 1%)
+
+Ciclo 4h (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 UTC):
+    news_regime.py → DeepSeek v4-pro thinking (G2b shadow mode)
+    Lê: news_scores.parquet + gate_zscores.parquet + btc_1h + conf/analyst_context.json
+    Salva: data/02_features/news_regime.parquet
+    Colunas: regime_hint, confidence, reasoning, analyst_bias, analyst_context_age_h
 
 Ciclo Diário (07:00 UTC):
     Binance Spot (1d candles)
@@ -112,6 +118,44 @@ Se close < MA200 e slope negativo por 5+ dias → força Bear (bypass R5C lento)
 - News BEAR forte (score < -3) → BLOCK_NEWS_BEAR
 - G2_fed < -1.0 perto de FOMC → BLOCK_FED_HAWKISH
 
+## G2b — News Regime (shadow mode, desde 2026-04-25)
+
+`src/data/news_regime.py` — classificação holística BULL/SIDEWAYS/BEAR via DeepSeek v4-pro thinking.
+
+**Inputs:** news_scores.parquet + gate_zscores.parquet + btc_1h.parquet + conf/analyst_context.json  
+**Output:** `data/02_features/news_regime.parquet`  
+**Cron:** `0 */4 * * *` (alinhado com NEWS_WINDOW_H=4)
+
+### Prompt (4 BLOCOs):
+- **BLOCO A** — instrução de sistema (no system message do v4-pro)
+- **BLOCO B** — dados de mercado: close, ret_4h, ret_1h_pre, OI_z, taker_z, funding_z, regime HMM, artigos 4h com event_cluster
+- **BLOCO C** — 8 regras obrigatórias:
+  1. FOMC_DOVISH → nunca BULL
+  2. SATURAÇÃO → 3+ mesmo cluster → SIDEWAYS
+  3. REGIME HMM → contexto, não replicar
+  4. DATA QUALITY → N<3 → confidence ≤ 0.4
+  5. HORIZONTE → edge_4h primário
+  6. FLUXO > HEADLINE → graduação 3/3 (fluxo domina) vs 2/3 (parcial, viés BEAR)
+  7. FUNDING_Z → crowd positioning (< -1.0 squeeze risk, > +1.0 longs sobrecarregados)
+  8. TAKER_Z → escala obrigatória; proíbe "neutral" fora de ±0.3
+- **BLOCO D** — contexto manual do analista (conf/analyst_context.json, expira 12h)
+
+### Analyst Context Manual
+- Arquivo: `conf/analyst_context.json` (commitado, não em data/)
+- Campos: updated_at, author, horizon, context, bias, confidence, tags
+- Expira em 12h — G2b ignora se stale
+- Editável via dashboard (System Health → card Contexto do Analista) ou `git push` direto
+- `analyst_bias` e `analyst_context_age_h` persistidos no parquet de output
+
+### DeepSeek — Modelos por módulo
+
+| Módulo | Modelo | Modo | Uso |
+|--------|--------|------|-----|
+| `news_classify.py` | deepseek-v4-flash | non-thinking | G2a: classificação por artigo, batch |
+| `news_regime.py` | deepseek-v4-pro | thinking (enabled) | G2b: regime holístico 4h |
+| `dashboard/app.py` AI Analyst | deepseek-v4-pro | non-thinking | Análise sob demanda |
+| `fed_sentinel.py` | deepseek-chat | non-thinking | ⚠️ não migrado ainda |
+
 ## Data Sources
 
 ### CoinGlass (derivativos agregado, 4h, Hobbyist $29/mês)
@@ -136,25 +180,28 @@ Se close < MA200 e slope negativo por 5+ dias → força Bear (bypass R5C lento)
 ```
 btc_AI/
 ├── conf/                          # Configuração (zero hardcode)
-│   ├── parameters.yml             # Gates, stops, capital_management, momentum_filter_v2
+│   ├── parameters.yml             # Gates, stops, capital_management, momentum_filter
+│   ├── analyst_context.json       # Contexto manual do analista (G2b, expira 12h)
 │   └── credentials.yml            # API keys (gitignored)
 ├── data/                          # gitignored, volumes Docker
 │   ├── 01_raw/                    # Dados brutos das APIs
 │   │   ├── spot/                  # btc_1h, eth_1h, sol_1h
 │   │   └── futures/               # oi, funding, taker, ls_account, ls_position (BTC+ETH)
 │   ├── 02_intermediate/           # Clean: resampled, ffilled
-│   ├── 02_features/               # Z-scores, news_scores
+│   ├── 02_features/               # Z-scores, news_scores, news_regime
 │   ├── 03_models/                 # R5C HMM pickle
 │   ├── 04_scoring/                # Gate scores, regime history
 │   ├── 05_output/                 # Portfolio, trades (parquet)
-│   └── 05_trades/                 # Trades JSON por bot (completed_trades_eth.json, completed_trades_sol.json)
+│   └── 05_trades/                 # Trades JSON por bot
 ├── src/
 │   ├── config.py                  # Loader centralizado
-│   ├── data/                      # Ingestão (10 módulos)
+│   ├── data/                      # Ingestão (11 módulos)
 │   │   ├── binance_spot.py        # Spot 1h/1d — multi-symbol
 │   │   ├── binance_ls.py          # L/S top accounts/positions — multi-symbol
 │   │   ├── coinglass_futures.py   # OI/Funding/Taker 4h — multi-symbol
 │   │   ├── coinglass_ls.py        # L/S bootstrap via CoinGlass (one-shot)
+│   │   ├── news_classify.py       # G2a: classify articles → news_scores.parquet (v4-flash)
+│   │   ├── news_regime.py         # G2b: regime holístico → news_regime.parquet (v4-pro thinking)
 │   │   └── utils.py               # fetch_with_retry, dedup_by_timestamp, save_with_window
 │   ├── features/
 │   │   └── technical.py           # get_latest_technical() → rsi_14, bb_pct, ma_21, volume_z, rsi (alias)
@@ -167,7 +214,7 @@ btc_AI/
 │   │   ├── capital_manager.py     # Multi-bucket portfolio (btc_bot1 + btc_bot2, 50/50)
 │   │   └── execution.py
 │   └── dashboard/                 # Streamlit app (9 seções)
-│       └── app.py                 # load_sol_trades_json() lê 05_trades/completed_trades_sol.json
+│       └── app.py
 ├── scripts/
 │   ├── hourly_cycle.sh            # Bot 1+2 BTC (cron :05)
 │   ├── daily_update.sh            # Atualização diária (07:00 UTC)
@@ -183,16 +230,8 @@ btc_AI/
 │   ├── sol_bot2_transfer_study.py # Transfer Bot 2 → SOL — REJEITADO
 │   └── migrate_portfolio_to_multibucket.py
 ├── prompts/                       # Relatórios de análise e backtest
-│   ├── eth_phase0_report.md
-│   ├── bot2_v2_backtest_report.md
-│   ├── sol_v2_sweet_spot_report.md
-│   ├── sol_bot2_transfer_report.md
-│   ├── plots/                     # Heatmaps, equity curves
-│   └── tables/                    # CSVs de correlação e trades
-├── tests/
-│   ├── test_dynamic_tp.py         # 9 testes Dynamic TP v2
-│   └── ...                        # 316+ testes total
-├── docker/                        # environment_docker.txt, crontab
+├── tests/                         # 316+ testes
+├── docker/                        # crontab (supercronic)
 ├── Dockerfile, docker-compose.yml
 └── CLAUDE.md
 ```
@@ -201,17 +240,23 @@ btc_AI/
 
 1. **Header** — BTC price, OI, F&G, regime, score, MA200 status, Fed, cron health
 2. **Gate Scoring v2** — 6 clusters + texto interpretativo
+   - Cluster NEWS mostra: Crypto + Macro + Fed + Combined = Crypto×0.4 + Macro×0.6
 3. **Paper Trading** — 4 sub-seções por bot:
    - **3a Bot 1 (BTC Gate)** — capital, posição aberta, histórico de trades
-   - **3b Bot 2 (BTC Momentum)** — capital, TP razão, métricas (WR, PF, retorno, MaxDD)
-   - **3c Bot 3 (ETH Volume)** — preço ETH, capital, posição aberta, status 3 filtros (volume Q2 / RSI / MA200), histórico
+   - **3b Bot 2 (BTC Momentum)** — capital, TP razão, métricas (WR, PF, retorno, MaxDD) + 6 filtros (inclui news)
+   - **3c Bot 3 (ETH Volume)** — preço ETH, capital, posição aberta, status 3 filtros, histórico
    - **3d Bot 4 (SOL — PAUSADO)** — estado do portfolio, histórico de trades
-4. **AI Analyst** — DeepSeek sob demanda
+4. **AI Analyst** — DeepSeek v4-pro sob demanda (timeout 120s)
 5. **Whale Tracking** — L/S top accounts/positions + gráfico divergência
 6. **Derivativos** — OI, funding, taker, liquidações, bid/ask, order book
 7. **Macro** — DGS10, DGS2, curve, VIX, DXY, Oil, S&P
-8. **News & Sentiment** — feed + scores + F&G + Fed Sentinel (seção 9 no código)
-9. **System Health** — data freshness + calibration alerts + score history + Bot 1 model health
+8. **News & Sentiment** — feed + scores + F&G + Fed Sentinel
+9. **System Health** — data freshness + DeepSeek balance card + Analyst Context card + score history + Bot 1 model health
+
+### Dashboard — System Health (cards adicionados 2026-04-25)
+
+**DeepSeek API card:** saldo USD (cache 1h), status verde/amarelo/vermelho, G2a ativo / G2b shadow mode  
+**Contexto do Analista card:** form editável (bias, confidence, horizon, context, tags), status de expiração (12h), último output G2b
 
 ### Dashboard — Paths de dados por bot
 
@@ -228,7 +273,7 @@ btc_AI/
 Rolling 30d correlação vs retorno 3d forward. Compara com parameters.yml.
 ✅ Δ<0.15 | ⚠️ Δ>0.15 | 🔴 Δ>0.25
 
-## Bots — Status (2026-04-22)
+## Bots — Status (2026-04-26)
 
 | Bot | Asset | Strategy | Status | Script |
 |-----|-------|----------|--------|--------|
@@ -239,12 +284,14 @@ Rolling 30d correlação vs retorno 3d forward. Compara com parameters.yml.
 
 ### Bot 1 BTC — Gate Scoring
 - Estratégia: Gate Score threshold → ENTER/BLOCK + reversal filter
-- Stops: SL 2%, SG 1.5%, trailing 1%
+- Stops: SL dinâmico ATR (clamp 2–6%), SG 1.5%, trailing 1%
 - `entry_bot: "bot1"` internamente; portfolio compartilhado com Bot 2 (`portfolio_state.json`)
+- **Live 2026:** 3 trades, todos STOP_LOSS. MFE médio > 0 antes do SL — direcional correto mas SL apertado.
+- Reavaliação SL: aguardar N≥20 trades antes de alterar parâmetros.
 
 ### Bot 2 BTC — Momentum + Stablecoin
-- Estratégia: stablecoin_z > 1.3, ret_1d > 0, 60 ≤ RSI ≤ 80, BB < 0.98, close > MA21, spike guard
-- Stops: SL 1.5%, Trail 1%, TP dinâmico via `dynamic_tp.py` (ver seção abaixo)
+- Estratégia: stablecoin_z > 1.3, ret_1d > 0, RSI > 50, BB < 0.98, close > MA21, spike guard, news_score_min > -1.0
+- Stops: SL 1.5%, Trail 1%, TP dinâmico via `dynamic_tp.py`
 - **Live Mar-Abr 2026:** 5 trades, WR 80%, PF 2.07, +1.83%
 - ⚠️ Backtest 2026 (N=25): Sharpe -0.90 — divergência live/backtest a monitorar (amostra live pequena)
 - `entry_bot: "bot2"` internamente
@@ -262,10 +309,8 @@ Rolling 30d correlação vs retorno 3d forward. Compara com parameters.yml.
 ### Bot 4 SOL — Taker/Flow
 - **Status:** PAUSADO (2026-04-22)
 - 1 trade fechado: -0.98% (TRAIL, 3h28m)
-- **Conclusão: SOL ABANDONADO** — 3 estudos consecutivos rejeitados (ver seção SOL abaixo)
-- Config: `conf/parameters_sol.yml` (se existir) | Portfolio: `data/04_scoring/portfolio_sol.json`
+- **Conclusão: SOL ABANDONADO** — 3 estudos consecutivos rejeitados
 - Trades: `data/05_trades/completed_trades_sol.json`
-- Cron: `scripts/sol_hourly_cycle.py` → `src/trading/sol_bot4.py`
 
 ## Bot 2 — Dynamic TP v2 (live desde 2026-04-22)
 
@@ -277,20 +322,23 @@ Rolling 30d correlação vs retorno 3d forward. Compara com parameters.yml.
 | 2 | RSI > 75 AND BB > 0.95 | 1.5% | overbought |
 | 3 | default | 2.0% | default |
 
-- `volume_z`: rolling 168h z-score de volume, computado em `get_latest_technical()`
-- `rsi`: alias adicionado em `get_latest_technical()` (chave real é `rsi_14`)
-- `mf_check["volume_z"]` injetado em `paper_trader.py` antes de `_execute_bot2_entry()`
+## Bot 2 — News Filter (live desde 2026-04-23)
+
+`check_momentum_filter()` em `paper_trader.py` aceita `news_combined_score: float = 0.0`.  
+`news_score_min: -1.0` em `parameters.yml` → BEARISH_NEWS bloqueia entrada se score < -1.0.  
+Mais conservador que o kill switch do Bot 1 (-3.0).
 
 ## Bot 2 v2 — Early Reversal (Backtest — REJEITADO)
 
-`check_momentum_filter_v2` em paper_trader.py — duas cláusulas OR:
-- **Classic:** ret_1d > 0, RSI > 50, close > MA21
-- **Early:** ret_1d > -1.5%, trend_improving 3h, delta_ret_3h > 0.5%, RSI > 35
-
 **Veredicto backtest (2026-01-08 → 2026-04-20): ❌ REJEITADO**
+Early entries (n=16): WR 50% mas PF 0.79. `momentum_filter_v2.enabled: false`.
 
-Early entries (n=16): WR 50% mas PF 0.79 — losses maiores que wins.
-`momentum_filter_v2.enabled: false` — código mantido para referência.
+## L/S Top Accounts — Estudo Edge (2026-04-23)
+
+**Veredicto: RUÍDO / INCONCLUSIVO** — apenas 26 dias de dados (Binance retém ~28d).  
+Pearson significativo apenas em 24h (r=0.16) — incompatível com decisão horária do Bot 1.  
+Q1 vs Q4 diff 3h = 0.14% (abaixo do limiar 0.30%).  
+**Reavaliação:** quando cron acumular ~3 meses de L/S (~2000h, jun/2026).
 
 ## SOL — Estudos e Veredito Final (2026-04-22)
 
@@ -302,34 +350,13 @@ Early entries (n=16): WR 50% mas PF 0.79 — losses maiores que wins.
 | v2 Sweet Spot | `sol_v2_sweet_spot_backtest.py` | ❌ REJEITADO | 0.26 (N=9, overfit) |
 | Bot 2 Transfer | `sol_bot2_transfer_study.py` | ❌ REJEITADO | -2.16 (WR 27%) |
 
-**Conclusão:** Problema é o regime SOL em 2026, não a estratégia. Nenhuma strategy de momentum tem edge em SOL 2026.
-
-### SOL Dashboard Fix
-- Bot 4 escreve trades em `data/05_trades/completed_trades_sol.json`
-- Dashboard lê via `load_sol_trades_json()` (normaliza schema: pnl_pct→return_pct×100, timestamps UTC)
-- **Não** usar `data/05_output/trades_sol.parquet` (path legado, não existe)
+Problema: regime SOL em 2026, não a estratégia. Re-avaliar só com evidência externa de mudança de regime.
 
 ## Multi-Symbol (ETH — Fase 0 → 1)
 
 ### Naming convention (multi-symbol)
-
-BTC mantém paths legados sem prefixo. Outros símbolos ganham prefixo:
 - BTC: `ls_account_1h.parquet`, `oi_4h.parquet`
 - ETH: `eth_ls_account_1h.parquet`, `eth_oi_4h.parquet`
-
-### Dados ETH disponíveis (2026-04-20)
-
-| Dataset | Rows | Período |
-|---------|------|---------|
-| Spot 1h | 8760 | 365d |
-| OI/Funding/Taker 4h | 1080 | 180d |
-| L/S Account/Position 1h | 500 | 28d (cron acumula) |
-
-### L/S híbrido (Binance + CoinGlass)
-
-Binance retém apenas ~30 dias de L/S. Bootstrap via CoinGlass (one-shot, usa quota).
-`binance_ls.py` clamps startTime a 28d automaticamente para evitar HTTP 400.
-`dedup_by_timestamp` garante que Binance (novo) vence CoinGlass (antigo) em overlap.
 
 ### ETH Phase 0 — Resultados (2026-04-20)
 
@@ -337,50 +364,45 @@ Binance retém apenas ~30 dias de L/S. Bootstrap via CoinGlass (one-shot, usa qu
 
 | Gate | 180d ETH corr_3d | Config BTC | Status |
 |------|-----------------|------------|--------|
-| G4 OI | +0.019 | -0.472 | 🔴 broken (instável) |
-| G10 Funding | +0.020 | -0.064 | ✅ aligned |
-| G9 Taker | -0.007 | +0.143 | ✅ aligned |
-| G8 F&G | -0.100 | -0.211 | ✅ aligned |
+| G4 OI | +0.019 | -0.472 | 🔴 broken |
+| G6 Bubble | -0.011 | -0.345 | 🔴 broken |
 | G3 DGS10 | -0.159 | -0.315 | ⚠️ attention |
 | G5 Stablecoin | +0.122 | +0.326 | ⚠️ attention |
 | G7 ETF | +0.056 | +0.263 | ⚠️ attention |
 | G3 Curve | -0.061 | -0.282 | ⚠️ attention |
-| G6 Bubble | -0.011 | -0.345 | 🔴 broken |
+| G10 Funding | +0.020 | -0.064 | ✅ aligned |
+| G9 Taker | -0.007 | +0.143 | ✅ aligned |
+| G8 F&G | -0.100 | -0.211 | ✅ aligned |
 
-**Próximo passo ETH:** `conf/parameters_eth.yml` com ajuste dos gates ⚠️/🔴.
+**Próximo passo ETH:** `conf/parameters_eth.yml` com corr_cfg recalibrados (G4 OI e G6 Bubble broken).
 
 ## Capital Manager (Multi-Bucket)
 
 `src/trading/capital_manager.py` — dois buckets independentes (btc_bot1 + btc_bot2, 50/50).
 - `capital_management.enabled: false` por default (ativar após migração)
 - Migração: `python scripts/migrate_portfolio_to_multibucket.py`
-- Safety gates: max_drawdown 15%, max_daily_loss 5%, pause mechanics
 
 ## Roadmap
 
 ### BTC (prioridade imediata)
 - Monitorar divergência live/backtest Bot 2 (live WR 80% N=5 vs backtest Sharpe -0.90 N=25)
 - Acumular N=20+ trades live para validação estatística
-- Rotina diária de recalibração (correlações rolling vs config)
+- Integrar G2b (news_regime) no scoring após validação shadow (meta: 30 ciclos)
+- Migrar `fed_sentinel.py` de deepseek-chat para deepseek-v4-flash
 - Elastic IP na EC2
 
 ### ETH (próximo)
-- `conf/parameters_eth.yml` com corr_cfg recalibrados para ETH (G4 OI e G6 Bubble estão broken)
+- `conf/parameters_eth.yml` com corr_cfg recalibrados para ETH (G4 OI e G6 Bubble broken)
 - Paper trading ETH (quando alignment > 0.4 confirmado)
-- Deploy EC2: `git pull` + `bootstrap_eth_history.py`
 
 ### SOL
 - **ABANDONADO** — re-avaliar somente se regime mudar (evidência externa necessária)
 
 ### Data Lake Multi-Exchange (btc-data-lake/ — projeto separado)
 - Assessment 6 exchanges (Binance, OKX, Bybit, Gate, Bitget, KuCoin)
-- Ingestão parametrizável via YAML
-- Agregação caseira, deploy AWS S3
 
 ### Arbitragem (btc-arbitrage/ — projeto separado)
 - Funding rate arbitrage delta-neutral
-- AI.hab como orquestrador de bots (Grid, Arb, Trend)
-- Gate scoring adaptado anti-whale
 
 ### Comercialização
 - Signal service, Dashboard SaaS, Copy trading
