@@ -1396,60 +1396,69 @@ elif view == "Admin":
     st.caption(f"Última atualização: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
 
     # ── 1. STATUS DOS BOTS ────────────────────────────────────────────────────
-    st.subheader("🤖 Status dos Bots")
+    st.subheader("🤖 Status dos Bots — BTC")
 
-    _cm_path = ROOT / "data/04_scoring/capital_manager.json"
-    _cm = {}
-    if _cm_path.exists():
-        try:
-            _cm = json.loads(_cm_path.read_text())
-        except Exception:
-            pass
+    # Source of truth: portfolio_state.json (capital_manager.json has stale n_trades)
+    _adm_port   = load_portfolio()
+    _adm_cap    = _adm_port.get("capital_usd", 10000.0)
+    _adm_ini    = 10000.0
+    _adm_pnl    = _adm_cap - _adm_ini
+    _adm_pnl_pct = (_adm_cap / _adm_ini - 1) * 100
+    _adm_has_pos = _adm_port.get("has_position", False)
+    _adm_ebot    = _adm_port.get("entry_bot")
+    _adm_ep      = _adm_port.get("entry_price")
+    _adm_sl      = _adm_port.get("stop_loss_price")
+    _adm_tp      = _adm_port.get("take_profit_price")
+    _adm_et      = _adm_port.get("entry_time")
+    _adm_paused  = _adm_port.get("paused_until")
+    _adm_csl     = _adm_port.get("consecutive_sl_count", 0)
+    _adm_lsig    = _adm_port.get("last_signal", "—")
 
-    _buckets = _cm.get("buckets", {})
-    _bot_meta = {
-        "btc":  {"label": "Bot 1+2 (BTC)",  "icon": "₿",  "color": "#f7931a"},
-        "eth":  {"label": "Bot 3 (ETH)",     "icon": "Ξ",  "color": "#627eea"},
-        "sol":  {"label": "Bot 4 (SOL) ⏸",  "icon": "◎",  "color": "#9945ff"},
-    }
-    _portfolio_btc = load_portfolio()
-    _b1_b2_pos = _portfolio_btc.get("has_position", False)
+    _ac1, _ac2, _ac3 = st.columns(3)
 
-    if _buckets:
-        _bcols = st.columns(len(_buckets))
-        for _bi, (_bk, _bv) in enumerate(_buckets.items()):
-            _meta     = _bot_meta.get(_bk, {"label": _bk.upper(), "icon": "?", "color": "#8b949e"})
-            _cap      = _bv.get("current_capital_usd", 0)
-            _ini      = _bv.get("initial_capital_usd", 10000)
-            _pnl      = _bv.get("realized_pnl", 0)
-            _pnl_pct  = (_cap / _ini - 1) * 100 if _ini else 0
-            _has_pos  = _bv.get("has_position", False)
-            _bot_src  = _bv.get("bot_origin") or "—"
-            _enabled  = _bv.get("enabled", True)
-            _ntrades  = _bv.get("n_trades_total", 0)
-            _nwins    = _bv.get("n_wins", 0)
-            _nloss    = _bv.get("n_losses", 0)
+    _adm_pnl_c = "pos" if _adm_pnl_pct >= 0 else "neg"
+    _ac1.metric(
+        "💰 Capital Total BTC",
+        f"${_adm_cap:,.2f}",
+        delta=f"{_adm_pnl_pct:+.2f}% (${_adm_pnl:+.2f})",
+    )
 
-            if not _enabled:
-                _status_icon, _status_txt = "⏸", "Pausado"
-            elif _has_pos:
-                _status_icon, _status_txt = "🟢", "Em posição"
-            else:
-                _status_icon, _status_txt = "🔵", "Aguardando"
+    _b1_pos    = _adm_has_pos and _adm_ebot == "bot1"
+    _b1_status = ("🔒 Em posição" if _b1_pos
+                  else "⏸ Pausado" if _adm_paused
+                  else "🟢 Aguardando sinal")
+    _ac2.metric(
+        "🤖 Bot 1 — Reversal",
+        _b1_status,
+        delta=f"SL consecutivos: {_adm_csl}",
+    )
 
-            with _bcols[_bi]:
-                st.markdown(f"""
-<div class="cg-card" style="border-left:3px solid {_meta['color']};">
-  <div class="cg-card-title">{_meta['icon']} {_meta['label']}</div>
-  <div class="cg-card-value" style="font-size:20px;">${_cap:,.2f}</div>
-  <div class="cg-card-sub {'pos' if _pnl_pct >= 0 else 'neg'}">{_pnl_pct:+.2f}% (PnL ${_pnl:+.2f})</div>
-  <div class="cg-card-interp">
-    {_status_icon} {_status_txt} &nbsp;|&nbsp; Trades: {_ntrades} ({_nwins}W/{_nloss}L)
-    {f"<br>Bot: {_bot_src}" if _has_pos else ""}
-  </div>
-</div>""", unsafe_allow_html=True)
-    else:
-        st.info("capital_manager.json não encontrado.")
+    _b2_pos    = _adm_has_pos and _adm_ebot == "bot2"
+    _b2_status = ("🔒 Em posição" if _b2_pos
+                  else "⏸ Pausado" if _adm_paused
+                  else "🟢 Aguardando sinal")
+    _ac3.metric(
+        "🚀 Bot 2 — Momentum",
+        _b2_status,
+        delta=f"Último sinal: {_adm_lsig}",
+    )
+
+    if _adm_has_pos and _adm_ep:
+        _adm_et_s = str(_adm_et)[:16] if _adm_et else "—"
+        _adm_sl_s = f"${_adm_sl:,.0f}" if _adm_sl else "—"
+        _adm_tp_s = f"${_adm_tp:,.0f}" if _adm_tp else "—"
+        st.info(
+            f"📌 Posição aberta — {_adm_ebot} | "
+            f"Entrada: ${_adm_ep:,.0f} | "
+            f"SL: {_adm_sl_s} | "
+            f"TP: {_adm_tp_s} | "
+            f"Desde: {_adm_et_s} UTC"
+        )
+
+    st.caption(
+        "⚠️ capital_management.enabled=false — bots compartilham pool único. "
+        "Buckets separados pendentes de ativação."
+    )
 
     # ── 2. SEMÁFORO DE FONTES ─────────────────────────────────────────────────
     st.markdown("---")
@@ -1556,9 +1565,11 @@ elif view == "Admin":
         with _c1:
             st.markdown("**Stops Dinâmicos (ATR)**")
             st.table(pd.DataFrame({
-                "Parâmetro": ["Min SL%", "Max SL%", "Min TP%", "Max TP%",
+                "Parâmetro": ["Dynamic stops", "Min SL%", "Max SL%",
+                              "Min TP%", "Max TP%",
                               "ATR mult SL", "ATR mult TP", "ATR mult Trail"],
                 "Valor": [
+                    "✅" if _ex.get("use_dynamic_stops") else "❌",
                     f"{_ex.get('min_stop_loss_pct', 0)*100:.1f}%",
                     f"{_ex.get('max_stop_loss_pct', 0)*100:.1f}%",
                     f"{_ex.get('min_take_profit_pct', 0)*100:.1f}%",
@@ -1573,14 +1584,14 @@ elif view == "Admin":
             st.table(pd.DataFrame({
                 "Parâmetro": ["RSI max", "Ret 1d min", "RSI extremo override",
                               "Cooldown horas SL", "Max SLs consecutivos",
-                              "Pausa SLs consecutivos"],
+                              "Pausa após max SLs (h)"],
                 "Valor": [
                     _rf.get("rsi_max", "-"),
                     f"{(_rf.get('ret_1d_min') or 0)*100:.1f}%",
                     _rf.get("rsi_extreme_override", "-"),
                     _rfc.get("hours_after_sl", "-"),
                     _rfc.get("max_consecutive_sl", "-"),
-                    f"{_rfc.get('consecutive_sl_pause_hours', '-')}h",
+                    _rfc.get("consecutive_sl_pause_hours", "-"),
                 ]
             }))
 
