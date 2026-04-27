@@ -1639,6 +1639,82 @@ elif view == "Admin":
                 ]
             }))
 
+    # ── 5. CONTEXTO DO ANALISTA ───────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("📝 Contexto do Analista")
+    st.caption("Percepção qualitativa de mercado — alimenta o G2b (DeepSeek-R1) no próximo ciclo de 4h.")
+
+    _ctx_path = ROOT / "conf" / "analyst_context.json"
+    _ctx = load_analyst_context() or {}
+
+    if _ctx:
+        _ctx_updated = _ctx.get("updated_at", "-")
+        try:
+            _ctx_dt = datetime.fromisoformat(_ctx_updated.replace(" UTC", "+00:00"))
+            if _ctx_dt.tzinfo is None:
+                _ctx_dt = _ctx_dt.replace(tzinfo=timezone.utc)
+            _ctx_age_h  = (datetime.now(tz=timezone.utc) - _ctx_dt).total_seconds() / 3600
+            _ctx_age_s  = f"{_ctx_age_h:.1f}h atrás"
+            _ctx_expire = max(0.0, 12.0 - _ctx_age_h)
+            _ctx_status = "🟢" if _ctx_age_h < 8 else ("🟡" if _ctx_age_h < 12 else "🔴 EXPIRADO")
+        except Exception:
+            _ctx_age_s, _ctx_expire, _ctx_status = "-", 0.0, "⚪"
+        st.caption(f"{_ctx_status} Atualizado: {_ctx_updated} ({_ctx_age_s}) | Expira em: {_ctx_expire:.1f}h")
+    else:
+        st.caption("⚪ Nenhum contexto salvo ainda.")
+
+    _bias_opt = ["BEAR", "SIDEWAYS", "BULL"]
+    _conf_opt = ["high", "medium", "low"]
+    _cc1, _cc2, _cc3 = st.columns(3)
+    _ctx_bias    = _ctx.get("bias", "SIDEWAYS")
+    _ctx_conf    = _ctx.get("confidence", "medium")
+    _ctx_bias_i  = _bias_opt.index(_ctx_bias) if _ctx_bias in _bias_opt else 1
+    _ctx_conf_i  = _conf_opt.index(_ctx_conf) if _ctx_conf in _conf_opt else 1
+    _new_bias    = _cc1.selectbox("Viés", _bias_opt, index=_ctx_bias_i)
+    _new_conf    = _cc2.selectbox("Confiança", _conf_opt, index=_ctx_conf_i)
+    _new_horizon = _cc3.text_input("Horizonte", value=_ctx.get("horizon", "24-48h"))
+
+    _new_context = st.text_area(
+        "Percepção de mercado",
+        value=_ctx.get("context", ""),
+        height=120,
+        placeholder="Ex: Trump otimista sobre acordo Iran mas negociações falharam no Paquistão. Hormuz ainda bloqueado...",
+    )
+    _new_tags_str = st.text_input(
+        "Tags (separadas por vírgula)",
+        value=", ".join(_ctx.get("tags", [])),
+    )
+
+    if st.button("💾 Salvar Contexto"):
+        _new_ctx = {
+            "updated_at": datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            "author":     "Edmundo",
+            "horizon":    _new_horizon,
+            "context":    _new_context,
+            "bias":       _new_bias,
+            "confidence": _new_conf,
+            "tags":       [t.strip() for t in _new_tags_str.split(",") if t.strip()],
+        }
+        save_analyst_context(_new_ctx)
+        st.success("✅ Contexto salvo — G2b usará na próxima execução (4h)")
+        st.rerun()
+
+    # ── Último output G2b ─────────────────────────────────────────────────
+    _nr_path = ROOT / "data" / "02_features" / "news_regime.parquet"
+    if _nr_path.exists():
+        _nr_df = load_parquet("data/02_features/news_regime.parquet")
+        if not _nr_df.empty:
+            _nr_last = _nr_df.iloc[-1]
+            st.markdown("**Último output G2b:**")
+            _nr_c1, _nr_c2, _nr_c3 = st.columns(3)
+            _nr_hint  = str(_nr_last.get("regime_hint", "-"))
+            _nr_color = "🟢" if _nr_hint == "BULL" else ("🔴" if _nr_hint == "BEAR" else "🟡")
+            _nr_c1.metric("Regime G2b", f"{_nr_color} {_nr_hint}")
+            _nr_c2.metric("Confiança", f"{float(_nr_last.get('confidence', 0)):.2f}")
+            _nr_c3.metric("Analyst bias usado", str(_nr_last.get("analyst_bias") or "nenhum"))
+            _nr_reasoning = str(_nr_last.get("reasoning", "-"))
+            st.caption(f"Reasoning: {_nr_reasoning[:200]}")
+
     # ── Footer ────────────────────────────────────────────────────────────────
     st.markdown("---")
     st.caption(f"Admin | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
