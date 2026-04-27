@@ -134,8 +134,19 @@ def compute_stale_days(zscores: dict) -> dict:
     return stale
 
 
-def load_news_crypto_score(lookback_hours: int = 4) -> float:
-    """Load latest crypto news score from news_scores parquet, or 0.0."""
+def load_news_combined_score(lookback_hours: int = 4) -> float:
+    """
+    Load latest combined news score (crypto + macro) from news_scores parquet.
+
+    The combined_score is computed by news_classify.py as:
+      combined = 0.4 * crypto_score + 0.6 * macro_score
+
+    This ensures geopolitical events (war, oil crisis) and macro news
+    (Fed, inflation) are reflected in trading decisions, not just crypto news.
+
+    Falls back to crypto_score if combined_score is not available.
+    Returns 0.0 if no recent scores.
+    """
     path = get_path("news_scores")
     if not path.exists():
         return 0.0
@@ -147,9 +158,16 @@ def load_news_crypto_score(lookback_hours: int = 4) -> float:
     recent = df[df["timestamp"] >= cutoff]
     if recent.empty:
         return 0.0
+    # Prefer combined_score (crypto+macro), fallback to crypto_score
+    if "combined_score" in recent.columns:
+        return float(recent["combined_score"].mean())
     if "crypto_score" in recent.columns:
         return float(recent["crypto_score"].mean())
     return 0.0
+
+
+# Backward compat alias
+load_news_crypto_score = load_news_combined_score
 
 
 def load_score_history() -> list[float]:
@@ -554,7 +572,7 @@ def check_cooldown(portfolio: dict, current_price: float, bot: str, params: dict
 # Reversal filter (entry confirmation — applied after scoring says ENTER)
 # ---------------------------------------------------------------------------
 
-def check_momentum_filter(technical: dict, zscores: dict, params: dict, news_crypto_score: float = 0.0) -> dict:
+def check_momentum_filter(technical: dict, zscores: dict, params: dict, news_combined_score: float = 0.0) -> dict:
     """
     Bot 2 — Momentum/Liquidez filter.
     Entry when stablecoin liquidity is flowing in + market in uptrend.
@@ -566,7 +584,7 @@ def check_momentum_filter(technical: dict, zscores: dict, params: dict, news_cry
       3. RSI > 50 (bullish zone)
       4. close > MA21 (short-term uptrend)
       5. BB% < 0.98 (not a blow-off top)
-      6. news_crypto_score >= -1.0 (no strong bearish news)
+      6. news_combined_score >= -1.0 (no strong bearish news, crypto+macro)
     """
     mf = params.get("momentum_filter", {})
 
@@ -598,7 +616,7 @@ def check_momentum_filter(technical: dict, zscores: dict, params: dict, news_cry
         "ret_min": ret_min,
         "rsi_min": rsi_min,
         "bb_max": bb_max,
-        "news_crypto_score": news_crypto_score,
+        "news_combined_score": news_combined_score,
         "news_min": news_min,
     }
 
@@ -629,8 +647,8 @@ def check_momentum_filter(technical: dict, zscores: dict, params: dict, news_cry
     if require_ma21 and close <= ma_21:
         reasons.append(f"BELOW_MA21 (close={close:.0f} <= MA21={ma_21:.0f})")
 
-    if news_crypto_score < news_min:
-        reasons.append(f"BEARISH_NEWS (news={news_crypto_score:.2f} < {news_min})")
+    if news_combined_score < news_min:
+        reasons.append(f"BEARISH_NEWS (news={news_combined_score:.2f} < {news_min})")
 
     spike_cfg = mf.get("spike_guard", {})
     if spike_cfg.get("enabled", False):
@@ -641,6 +659,18 @@ def check_momentum_filter(technical: dict, zscores: dict, params: dict, news_cry
                 f"LATE_SPIKE (ret_1d={ret_1d:.4f} > {spike_ret_max} "
                 f"AND RSI={rsi:.1f} > {spike_rsi_max})"
             )
+
+    rsi_max = mf.get("rsi_max", None)
+    if rsi_max is not None and rsi is not None and rsi > rsi_max:
+        reasons.append(f"RSI_HIGH ({rsi:.1f} > {rsi_max})")
+
+    dist_min = mf.get("dist_high_7d_min", None)
+    if dist_min is not None:
+        high_7d = technical.get("high_7d")
+        if high_7d is not None and close is not None:
+            dist = (high_7d - close) / close
+            if dist < dist_min:
+                reasons.append(f"NEAR_RESISTANCE (dist={dist:.3f} < {dist_min})")
 
     if reasons:
         result["passed"] = False
@@ -901,12 +931,49 @@ def check_stops_only() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Bot 2 — TP dinâmico consciente de resistência
+# ---------------------------------------------------------------------------
+
+def compute_tp_bot2(
+    entry_price: float,
+    high_7d: float | None,
+    bb_upper: float | None,
+    atr_14: float | None,
+    params: dict,
+) -> tuple[float | None, str]:
+    """
+    TP dinâmico consciente de resistência para Bot 2.
+    Retorna (tp_pct, reason) ou (None, 'fallback') se dados insuficientes.
+    """
+    if high_7d is None or bb_upper is None or atr_14 is None or atr_14 <= 0:
+        return None, "fallback"
+
+    resist    = min(high_7d, bb_upper)
+    tp_resist = (resist / entry_price - 1) * 0.90
+    tp_atr    = (atr_14 * 2) / entry_price
+    tp_pct    = min(tp_resist, tp_atr, 0.03)
+    tp_pct    = max(tp_pct, 0.008)
+
+    if tp_pct < 0.008:
+        return None, "TP_TOO_SMALL"
+
+    if abs(tp_pct - tp_resist) < 1e-9:
+        reason = f"resist({resist:.0f})"
+    elif abs(tp_pct - tp_atr) < 1e-9:
+        reason = f"atr({atr_14:.0f})"
+    else:
+        reason = "max_cap(3%)"
+
+    return tp_pct, reason
+
+
+# ---------------------------------------------------------------------------
 # Bot 2 entry execution
 # ---------------------------------------------------------------------------
 
 def _execute_bot2_entry(current_price: float, portfolio: dict,
                         mf_params: dict, mf_check: dict | None = None) -> dict:
-    """Execute Bot 2 entry with Dynamic TP v2 (context-aware)."""
+    """Execute Bot 2 entry with resistance-aware Dynamic TP."""
     params = get_params()["execution"]
     capital = portfolio["capital_usd"]
     size_pct = params["position_size_pct"]
@@ -917,12 +984,19 @@ def _execute_bot2_entry(current_price: float, portfolio: dict,
     sl_pct    = mf_params.get("stop_loss_pct", 0.015)
     trail_pct = mf_params.get("trailing_stop_pct", 0.01)
 
-    # Dynamic TP v2
-    _rsi    = (mf_check or {}).get("rsi")
-    _bb_pct = (mf_check or {}).get("bb_pct")
-    _vol_z  = (mf_check or {}).get("volume_z")
-    tp_pct, tp_reason = get_dynamic_tp(_rsi, _bb_pct, _vol_z)
-    log_tp_decision(current_price, tp_pct, tp_reason, _rsi, _bb_pct, _vol_z)
+    # MUDANÇA 3: TP dinâmico consciente de resistência (com fallback para Dynamic TP v2)
+    _high_7d  = (mf_check or {}).get("high_7d")
+    _bb_upper = (mf_check or {}).get("bb_upper")
+    _atr_14   = (mf_check or {}).get("atr_14")
+    tp_pct, tp_reason = compute_tp_bot2(current_price, _high_7d, _bb_upper, _atr_14, mf_params)
+    if tp_pct is None:
+        _rsi    = (mf_check or {}).get("rsi")
+        _bb_pct = (mf_check or {}).get("bb_pct")
+        _vol_z  = (mf_check or {}).get("volume_z")
+        tp_pct, tp_reason = get_dynamic_tp(_rsi, _bb_pct, _vol_z)
+        log_tp_decision(current_price, tp_pct, tp_reason, _rsi, _bb_pct, _vol_z)
+    else:
+        logger.info(f"BOT2 TP dinâmico: {tp_pct:.3f} ({tp_reason})")
 
     portfolio["has_position"] = True
     portfolio["entry_price"] = round(current_price, 2)
@@ -977,7 +1051,7 @@ def run_cycle() -> dict:
 
     # 5. News
     lookback_h = params["news"]["lookback_hours"]
-    news_crypto_score = load_news_crypto_score(lookback_h)
+    news_combined_score = load_news_combined_score(lookback_h)
 
     # 6. Fed Sentinel
     fed_context = get_fed_context(today=cycle_ts.date())
@@ -1016,7 +1090,7 @@ def run_cycle() -> dict:
             rsi=rsi_14,
             zscores=zscores,
             stale_days=stale_days,
-            news_crypto_score=news_crypto_score,
+            news_crypto_score=news_combined_score,
             fed_context=fed_context,
             score_history=score_history,
             spot_df=spot_df,
@@ -1171,25 +1245,37 @@ def run_cycle() -> dict:
 
         # Bot 2: Momentum — independent of gate scoring, runs if no position and not Bear
         if bot_entered is None and not portfolio["has_position"] and regime != "Bear":
-            cd_check_b2 = check_cooldown(portfolio, current_price, "bot2", params)
-            if not cd_check_b2["can_enter"]:
-                logger.info(f"BOT2 COOLDOWN ACTIVE: {cd_check_b2['reason']}")
-                mf_check = {"passed": False, "reason": cd_check_b2["reason"], "stablecoin_z": None}
+            # MUDANÇA 1: gate kill switches bloqueiam Bot 2 (toggle: respect_gate_kill_switches)
+            _mf_cfg = params.get("momentum_filter", {})
+            _use_gate_ks = _mf_cfg.get("respect_gate_kill_switches", True)
+            _gate_block  = result.get("block_reason", "")
+            _HARD_BLOCKS = {"BLOCK_BB_TOP", "BLOCK_OI_EXTREME", "BLOCK_NEWS_BEAR", "BLOCK_FED_HAWKISH"}
+            if _use_gate_ks and _gate_block in _HARD_BLOCKS:
+                logger.info(f"BOT2 BLOCKED by gate kill switch: {_gate_block}")
+                mf_check = {"passed": False, "reason": f"GATE_KS_{_gate_block}", "stablecoin_z": None}
             else:
-                # Capital manager gate
-                if cm_params.get("enabled", False):
-                    cm_check_b2 = cm_can_enter(portfolio, "btc_bot2", params)
-                    if not cm_check_b2["can_enter"]:
-                        logger.info(f"BOT2 CM BLOCKED: {cm_check_b2['reason']}")
-                        mf_check = {"passed": False, "reason": cm_check_b2["reason"], "stablecoin_z": None}
-                    else:
-                        mf_check = check_momentum_filter(technical, zscores, params, news_crypto_score)
+                cd_check_b2 = check_cooldown(portfolio, current_price, "bot2", params)
+                if not cd_check_b2["can_enter"]:
+                    logger.info(f"BOT2 COOLDOWN ACTIVE: {cd_check_b2['reason']}")
+                    mf_check = {"passed": False, "reason": cd_check_b2["reason"], "stablecoin_z": None}
                 else:
-                    mf_check = check_momentum_filter(technical, zscores, params, news_crypto_score)
+                    # Capital manager gate
+                    if cm_params.get("enabled", False):
+                        cm_check_b2 = cm_can_enter(portfolio, "btc_bot2", params)
+                        if not cm_check_b2["can_enter"]:
+                            logger.info(f"BOT2 CM BLOCKED: {cm_check_b2['reason']}")
+                            mf_check = {"passed": False, "reason": cm_check_b2["reason"], "stablecoin_z": None}
+                        else:
+                            mf_check = check_momentum_filter(technical, zscores, params, news_combined_score)
+                    else:
+                        mf_check = check_momentum_filter(technical, zscores, params, news_combined_score)
 
-            # Inject volume_z from technical into mf_check for dynamic TP
+            # Inject technical context into mf_check for TP computation and logging
             if isinstance(mf_check, dict):
                 mf_check["volume_z"] = technical.get("volume_z")
+                mf_check["high_7d"]  = technical.get("high_7d")
+                mf_check["bb_upper"] = technical.get("bb_upper")
+                mf_check["atr_14"]   = technical.get("atr_14")
 
             if mf_check["passed"]:
                 mf_params = params.get("momentum_filter", {})
@@ -1209,7 +1295,7 @@ def run_cycle() -> dict:
                 logger.info(
                     f"BOT2 ENTRY CONFIRMED: stablecoin_z={mf_check['stablecoin_z']:.2f} | "
                     f"ret_1d={mf_check['ret_1d']:.4f} | RSI={mf_check['rsi']:.1f} | "
-                    f"BB={mf_check['bb_pct']:.3f} | news={news_crypto_score:.2f}"
+                    f"BB={mf_check['bb_pct']:.3f} | news={news_combined_score:.2f}"
                 )
                 # SHADOW MODE: avalia filtro taker_z sem bloquear (FASE 4)
                 try:

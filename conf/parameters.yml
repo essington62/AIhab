@@ -208,8 +208,11 @@ momentum_filter:
   stablecoin_z_min: 1.3     # Stablecoin z-score mínimo (liquidez entrando)
   ret_1d_min: 0.0            # Retorno 1d mínimo (momentum positivo, > 0%)
   rsi_min: 50                # RSI mínimo (zona bullish)
-  bb_pct_max: 0.98           # BB% máximo (filtro anti blow-off top)
+  bb_pct_max: 0.85           # BB% máximo — era 0.98, reduzido (estudo bot2_study 2026-04-27)
   require_above_ma21: true   # Preço deve estar acima da MA21
+  rsi_max: 65                # RSI máximo (bloqueia entrada sobrecomprada)
+  dist_high_7d_min: 0.02     # Distância mínima ao high_7d — evita entrada em resistência
+  respect_gate_kill_switches: true  # BLOCK_BB_TOP/OI_EXTREME/NEWS_BEAR/FED_HAWKISH bloqueiam Bot 2
 
   # Cooldown após stop loss — mesmo mecanismo do Bot 1
   cooldown:
