@@ -1,8 +1,8 @@
+# app.py (versão com Admin integrado)
 """
 btc-trading-v1 Dashboard — CoinGlass style, dark theme.
 Run: streamlit run src/dashboard/app.py --server.port 8501
 """
-
 import json
 import sys
 import time
@@ -16,6 +16,7 @@ import requests
 import streamlit as st
 import yaml
 from plotly.subplots import make_subplots
+import plotly.express as px
 
 # ---------------------------------------------------------------------------
 # Path setup (streamlit runs from project root)
@@ -31,11 +32,12 @@ try:
 except Exception:
     _FED_OBS_AVAILABLE = False
 
+
 st.set_page_config(
     page_title="btc-trading-v1",
     page_icon="₿",
     layout="wide",
-    initial_sidebar_state="collapsed",
+    initial_sidebar_state="expanded",
     menu_items={},
 )
 
@@ -53,7 +55,6 @@ st.markdown("""
 
   .stApp { background-color: #0d1117; color: #e6edf3; }
   section[data-testid="stSidebar"] { background-color: #161b22; }
-  /* Zero top padding so header-bar is visible immediately */
   .block-container { padding: 0.5rem 2rem 2rem 2rem !important; max-width: 1600px; }
   h1, h2, h3 { color: #e6edf3; }
   hr { border-color: #30363d; }
@@ -157,6 +158,12 @@ AMBER = "#d29922"
 GREY  = "#8b949e"
 BLUE  = "#58a6ff"
 
+# ===========================================================================
+# NOVO: Menu lateral (antes de qualquer conteúdo do dashboard)
+# ===========================================================================
+st.sidebar.title("Navegação")
+view = st.sidebar.radio("Selecione a visão", ["Painel Principal", "Admin"])
+
 # ---------------------------------------------------------------------------
 # Data loading — cached 60s
 # ---------------------------------------------------------------------------
@@ -214,7 +221,6 @@ def load_fed_calendar() -> dict:
 def load_params() -> dict:
     return get_params()
 
-
 @st.cache_data(ttl=3600)
 def get_deepseek_balance() -> dict:
     """Query DeepSeek balance API. Cached 1h to avoid hammering on every refresh."""
@@ -227,7 +233,6 @@ def get_deepseek_balance() -> dict:
         )
         resp.raise_for_status()
         data = resp.json()
-        # Response: {"is_available": bool, "balance_infos": [{"currency": "USD", "total_balance": "...", ...}]}
         is_available = data.get("is_available", False)
         balance_usd = 0.0
         for info in data.get("balance_infos", []):
@@ -237,7 +242,6 @@ def get_deepseek_balance() -> dict:
         return {"available": is_available, "balance_usd": balance_usd, "error": None}
     except Exception as e:
         return {"available": False, "balance_usd": 0.0, "error": str(e)}
-
 
 def load_analyst_context() -> dict | None:
     """Read conf/analyst_context.json. Returns None if missing."""
@@ -250,49 +254,12 @@ def load_analyst_context() -> dict | None:
     except Exception:
         return None
 
-
 def save_analyst_context(data: dict) -> None:
     """Persist analyst context to conf/analyst_context.json with current UTC timestamp."""
     data["updated_at"] = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M UTC")
     path = ROOT / "conf/analyst_context.json"
     with open(path, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
-
-
-@st.cache_data(ttl=60)
-def load_sol_trades_json() -> pd.DataFrame:
-    """Load SOL trades from JSON (data/05_trades/) and normalize to unified schema."""
-    path = ROOT / "data/05_trades/completed_trades_sol.json"
-    if not path.exists():
-        return pd.DataFrame()
-    try:
-        raw = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return pd.DataFrame()
-    if not raw:
-        return pd.DataFrame()
-
-    rows = []
-    for t in raw:
-        ep = t.get("entry_price", 0) or 0
-        rows.append({
-            "entry_time":        pd.to_datetime(t.get("entry_timestamp"), utc=True),
-            "exit_time":         pd.to_datetime(t.get("exit_timestamp"),  utc=True),
-            "entry_price":       ep,
-            "exit_price":        t.get("exit_price"),
-            "return_pct":        (t.get("pnl_pct") or 0) * 100,
-            "exit_reason":       t.get("exit_reason"),
-            "stop_loss_price":   round(ep * 0.985, 4) if ep else None,
-            "take_profit_price": round(ep * 1.020, 4) if ep else None,
-            "trailing_high":     None,
-            "pnl_usd":           t.get("pnl_usd", 0),
-            "quantity":          t.get("quantity", 0),
-            "symbol":            t.get("symbol", "SOLUSDT"),
-            "entry_bot":         "bot4",
-            "rsi":               (t.get("entry_features") or {}).get("rsi"),
-            "stablecoin_z":      None,
-        })
-    return pd.DataFrame(rows)
 
 def _latest(df: pd.DataFrame, col: str, default=None):
     if df.empty or col not in df.columns:
@@ -386,8 +353,8 @@ def compute_clusters(zs: dict, bb_pct: float, rsi_14: float, portfolio: dict) ->
     ns = load_parquet("data/02_features/news_scores.parquet")
     crypto_score = _latest(ns, "crypto_score", 0.0) or 0.0
     macro_score  = _latest(ns, "macro_score",  0.0) or 0.0
-    fed_score    = portfolio.get("_fed_score", 0.0)
-    g2 = 0.5 * float(crypto_score) + 0.5 * float(fed_score)
+    fed_score    = float(portfolio.get("_fed_score", 0.0))
+    g2 = 0.5 * crypto_score + 0.5 * fed_score
 
     caps = params.get("cluster_caps", {})
     clusters = {
@@ -494,7 +461,6 @@ def interpret_cluster(name: str, score: float, det: dict, zs: dict) -> str:
             if fg_raw < 75:
                 return "😏 Greed — otimismo moderado, monitorar"
             return "🤑 Extreme Greed — contrarian bearish, risco de correção"
-        # Fallback to z-score if raw not available
         if z("fg_z") < -1.0:
             return "Fear & Greed em medo — contrarian bullish"
         if z("fg_z") > 1.5:
@@ -613,7 +579,6 @@ def compute_bot_metrics(trades_df: pd.DataFrame) -> dict:
         "avg_duration_hours": avg_dur,
     }
 
-
 def get_last_cycle_info() -> dict:
     log_dir = ROOT / "logs"
     if not log_dir.exists():
@@ -630,214 +595,6 @@ def get_last_cycle_info() -> dict:
     except Exception:
         return {}
 
-# ---------------------------------------------------------------------------
-# DeepSeek AI Analyst
-# ---------------------------------------------------------------------------
-
-_DEEPSEEK_SYSTEM_PROMPT = """Você é o analista quantitativo do sistema AI.hab. Recebe um snapshot do gate scoring v2 e produz leitura operacional em 3 seções, em texto plano.
-
-REGRAS
-- Proibido recapitular o que já está nos cards do dashboard (regime, cluster scores, macro z-scores, sentiment, news scores). O usuário já vê tudo isso. Foque APENAS no que os dados combinados implicam para estrutura de preço e gatilhos de sinal.
-- Sem markdown. Sem asteriscos, hashtags, bullets com asterisco. Use apenas quebras de linha e numeração simples (1., 2., 3.) para subitens.
-- Exija números concretos. Nunca escreva "perto da resistência" sem mencionar o valor em dólares. Nunca "melhora do momentum" sem threshold específico.
-- Linguagem probabilística. Evite determinismos. Use "sugere", "indica", "é consistente com".
-- Resposta entre 300 e 500 palavras total. Se dados incompletos, seja mais curto e sinalize.
-- Português do Brasil. Sem emojis. Sem hype.
-
-ESTRUTURA OBRIGATÓRIA
-
-SEÇÃO 1 — LEITURA DO SINAL ATUAL (2-4 linhas)
-Sintetize a decisão do sistema: sinal, score ajustado vs threshold, e a tensão narrativa central (por que o score está onde está — qual cluster domina, o que está travando ou liberando o sinal). Se kill switch ativo, por que domina. Se HOLD, qual cluster ou regime impede ENTER.
-
-SEÇÃO 2 — SUPORTES E RESISTÊNCIAS
-Seis linhas, uma por nível. Use exatamente este formato:
-Resistência imediata: $XX,XXX — [origem: BB upper / high 7d / etc]
-Resistência estrutural: $XX,XXX — [origem]
-Suporte imediato: $XX,XXX — [origem: MA50 / BB middle / etc]
-Suporte estrutural: $XX,XXX — [origem: MA200 / low 7d / etc]
-Zona de invalidação (bearish): $XX,XXX — [condição: fechamento 1h abaixo de X invalida estrutura]
-ATR(14): $XXX — amplitude média dos movimentos horários
-
-SEÇÃO 3 — GATILHOS PARA MUDAR O SINAL
-Para HOLD → ENTER: duas condições simultâneas mensuráveis (preço, RSI, z-score, regime).
-Para HOLD → BLOCK: duas condições que ativariam kill switch ou ruptura de suporte.
-Cada condição em uma linha, com threshold numérico explícito.
-
-CONTEXTO
-Gate scoring v2: 11 gates, 6 clusters. Score = Σ clusters × G0 (Bear=0, Sideways={sw_mult}×, Bull=1.0). ENTER se score ≥ threshold. Kill switches forçam BLOCK: BB_TOP≥0.80, OI z>2.5, NEWS_BEAR<-3, FED_HAWKISH (fed_score<-1 + FOMC≤T-2), BEAR_REGIME."""
-
-
-def call_deepseek_analyst(context: dict) -> str:
-    try:
-        api_key = get_credential("deepseek_api_key")
-    except Exception:
-        return "DeepSeek API key não configurado."
-
-    # ── Sinal e score ────────────────────────────────────────────────────────
-    score_raw   = context.get("score_raw", 0) or 0
-    mult        = context.get("regime_multiplier", 1.0) or 1.0
-    score_adj   = context.get("score", 0) or 0
-    block_rsn   = context.get("block_reason") or "nenhum"
-
-    # ── MA200 ────────────────────────────────────────────────────────────────
-    ma200_val   = context.get("ma200_val")
-    ma200_pct   = context.get("ma200_pct")
-    ma200_slope = context.get("ma200_slope")
-    ma200_line  = (f"MA200: ${ma200_val:,.0f} ({ma200_pct:+.1f}% do preço, "
-                   f"slope 5h {ma200_slope:+.0f})")  if ma200_val else "MA200: indisponível"
-
-    # ── BB ───────────────────────────────────────────────────────────────────
-    bb_upper    = context.get("bb_upper")
-    bb_middle   = context.get("bb_middle")
-    bb_lower    = context.get("bb_lower")
-    bb_line     = (f"BB: lower=${bb_lower:,.0f} / mid=${bb_middle:,.0f} / upper=${bb_upper:,.0f} / "
-                   f"pct={context.get('bb_pct',0):.3f}")  if bb_upper else \
-                  f"BB: pct={context.get('bb_pct',0):.3f} (valores absolutos indisponíveis)"
-
-    # ── MAs ──────────────────────────────────────────────────────────────────
-    _ma50  = context.get("ma50")
-    _ma100 = context.get("ma100")
-    ma_line = "  ".join(
-        f"MA{w}: ${v:,.0f}" for w, v in [("50", _ma50), ("100", _ma100), ("200", context.get("ma200_val"))]
-        if v is not None
-    ) or "MAs: indisponíveis"
-
-    # ── Rolling High/Low ─────────────────────────────────────────────────────
-    _h7  = context.get("high_7d");  _l7  = context.get("low_7d")
-    _h30 = context.get("high_30d"); _l30 = context.get("low_30d")
-    _atr = context.get("atr_14")
-    sr_line = ""
-    if _h7:
-        sr_line += f"Range 7d:  ${_l7:,.0f} — ${_h7:,.0f}\n"
-    if _h30:
-        sr_line += f"Range 30d: ${_l30:,.0f} — ${_h30:,.0f}\n"
-    if _atr:
-        sr_line += f"ATR(14):   ${_atr:,.0f}"
-    if not sr_line:
-        sr_line = "Ranges: indisponíveis"
-
-    # ── Fed events ≤14d ──────────────────────────────────────────────────────
-    fed_events_14d = context.get("fed_events_14d", [])
-    fed_events_str = "\n  ".join(fed_events_14d) if fed_events_14d else "Nenhum evento Fed nos próximos 14 dias"
-
-    # ── Fed Observatory ──────────────────────────────────────────────────────
-    fed_obs     = context.get("fed_obs", {})
-    if fed_obs:
-        fed_obs_line = (f"Prob corte: {fed_obs.get('prob_cut',0):.0%} | "
-                        f"Manutenção: {fed_obs.get('prob_hold',0):.0%} | "
-                        f"Alta: {fed_obs.get('prob_hike',0):.0%} "
-                        f"(confiança: {fed_obs.get('confidence','?')})")
-    else:
-        fed_obs_line = "Fed Observatory: indisponível"
-
-    user_prompt = f"""=== SNAPSHOT AI.hab — {context.get('ts', 'agora')} ===
-
-## PREÇO E REGIME
-Preço BTC: ${context.get('price', 0):,.0f} ({context.get('pct_24h', 0):+.2f}% 24h)
-Regime R5C: {context.get('regime', 'N/A')}
-RSI(14): {context.get('rsi', 50):.1f} | BB pct: {context.get('bb_pct', 0.5):.3f}
-{bb_line}
-{ma_line}
-{ma200_line}
-
-## SUPORTE E RESISTÊNCIA
-{sr_line}
-
-## SINAL E SCORE
-Score bruto (Σ clusters): {score_raw:+.4f}
-Multiplicador G0 ({context.get('regime','?')}): ×{mult}
-Score ajustado: {score_adj:+.4f}
-Threshold: {context.get('threshold', 3.5):.3f}
-Decisão: **{context.get('signal', 'N/A')}**
-Kill switch ativo: {block_rsn}
-
-## CLUSTERS (contribuição ao score)
-  Technical:   {context.get('c_technical', 0):+.3f}
-  Positioning: {context.get('c_positioning', 0):+.3f}
-  Macro:       {context.get('c_macro', 0):+.3f}
-  Liquidity:   {context.get('c_liquidity', 0):+.3f}
-  Sentiment:   {context.get('c_sentiment', 0):+.3f}
-  News:        {context.get('c_news', 0):+.3f}
-
-## DERIVATIVOS E POSICIONAMENTO
-OI z-score:      {context.get('oi_z', 0):.2f}
-Funding z-score: {context.get('funding_z', 0):.2f}
-Taker z-score:   {context.get('taker_z', 0):.2f}
-L/S top accounts:  {context.get('ls_account', 1):.3f}
-L/S top positions: {context.get('ls_position', 1):.3f}
-Whale signal: {context.get('whale_signal', 'N/A')}
-
-## LIQUIDEZ E FLUXOS
-Stablecoin mcap z-score: {context.get('stablecoin_z', 0):.2f}
-ETF flows 7d z-score:    {context.get('etf_z', 0):.2f}
-
-## MACRO (z-scores)
-DGS10:      {context.get('dgs10_z', 0):.2f}
-DGS2:       {context.get('dgs2_z', 0):.2f}
-Curva 2y10y:{context.get('curve_z', 0):.2f}
-RRP:        {context.get('rrp_z', 0):.2f}
-
-## FED
-Próximo evento: {context.get('fed_event', 'N/A')} em {context.get('fed_days', '?')} dias
-Proximity adj threshold: {context.get('fed_adj', 0):+.1f}
-{fed_obs_line}
-Eventos Fed ≤14 dias:
-  {fed_events_str}
-
-## SENTIMENTO
-Fear & Greed: {context.get('fg_val', 0):.0f}/100 ({context.get('fg_cls', 'N/A')}) | z-score: {context.get('fg_z', 0):.2f}
-Bubble index z-score: {context.get('bubble_z', 0):.2f}
-News crypto score:    {context.get('crypto_news_score', 0):+.2f}
-News fed score:       {context.get('fed_news_score', 0):+.2f}
-
----
-Gere a análise estruturada em 6 seções conforme instruído no system prompt."""
-
-    try:
-        resp = requests.post(
-            "https://api.deepseek.com/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": "deepseek-v4-pro",
-                "max_tokens": 2000,
-                "temperature": 0.3,
-                "top_p": 0.9,
-                "messages": [
-                    {"role": "system", "content": _DEEPSEEK_SYSTEM_PROMPT.format(
-                        sw_mult=float(load_params().get("sideways_multiplier", 0.5)))},
-                    {"role": "user",   "content": user_prompt},
-                ],
-            },
-            timeout=120,
-        )
-        resp.raise_for_status()
-        data    = resp.json()
-        content = data["choices"][0]["message"]["content"]
-        usage   = data.get("usage", {})
-        finish  = data["choices"][0].get("finish_reason", "")
-        comp_tokens = usage.get("completion_tokens", 0)
-        if finish == "length" or comp_tokens >= 1800:
-            _warn = (
-                f"DeepSeek truncation: finish_reason={finish}, "
-                f"completion_tokens={comp_tokens}, max_tokens=2000"
-            )
-            import logging, pathlib, datetime
-            logging.getLogger("dashboard.deepseek").warning(_warn)
-            try:
-                _log_dir = pathlib.Path("/app/logs") if pathlib.Path("/app").exists() \
-                           else pathlib.Path("logs")
-                _log_dir.mkdir(parents=True, exist_ok=True)
-                _ts = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-                with open(_log_dir / "deepseek_truncation.log", "a") as _fh:
-                    _fh.write(f"{_ts}  {_warn}\n")
-            except Exception:
-                pass
-            if finish == "length":
-                content = "⚠️ *Análise pode estar incompleta — max_tokens atingido.*\n\n" + content
-        return content
-    except Exception as e:
-        return f"Erro ao chamar DeepSeek: {e}"
-
 # ===========================================================================
 # MAIN APP
 # ===========================================================================
@@ -851,21 +608,12 @@ def main():
         regime_df  = load_regime_history()
         score_hist = load_score_history()
         macro_df   = load_parquet("data/02_intermediate/macro/fred_daily_clean.parquet")
-        vix_df     = load_parquet("data/01_raw/market/vix_daily.parquet")
-        dxy_df     = load_parquet("data/01_raw/market/dxy_daily.parquet")
-        oil_df     = load_parquet("data/01_raw/market/oil_daily.parquet")
-        sp500_df   = load_parquet("data/01_raw/market/sp500_daily.parquet")
         oi_df      = load_parquet("data/02_intermediate/futures/oi_1h_clean.parquet")
         taker_df   = load_parquet("data/02_intermediate/futures/taker_1h_clean.parquet")
         funding_df = load_parquet("data/02_intermediate/futures/funding_1h_clean.parquet")
         lsa_df     = load_parquet("data/01_raw/futures/ls_account_1h.parquet")
         lsp_df     = load_parquet("data/01_raw/futures/ls_position_1h.parquet")
-        liq_df     = load_parquet("data/01_raw/coinglass/liquidations_4h.parquet")
-        ob_df      = load_parquet("data/01_raw/coinglass/orderbook_4h.parquet")
-        ob_agg_df  = load_parquet("data/01_raw/coinglass/orderbook_agg_4h.parquet")
         fg_df      = load_parquet("data/01_raw/sentiment/fear_greed_daily.parquet")
-        etf_df     = load_parquet("data/01_raw/coinglass/etf_flows_daily.parquet")
-        bubble_df  = load_parquet("data/01_raw/coinglass/bubble_index_daily.parquet")
         ns_df      = load_parquet("data/02_features/news_scores.parquet")
         cal        = load_fed_calendar()
 
@@ -913,8 +661,7 @@ def main():
     global_conf_mult = portfolio.get("last_global_confidence_multiplier", 1.0) or 1.0
     total_score = round(total_score_after_regime * global_conf_mult, 4)
 
-    # Re-evaluate kill switches on fresh data (mirrors gate_scoring.check_kill_switches)
-    # Result: signal_computed is consistent with total_score shown in the body
+    # Re-evaluate kill switches on fresh data
     _ks = load_params().get("kill_switches", {})
     _news_d = cdet.get("news", {})
     _g2_raw = (0.5 * float(_news_d.get("crypto_score") or 0)
@@ -941,7 +688,6 @@ def main():
     else:
         signal_computed, block_reason_computed = "HOLD", None
 
-    # score and signal both freshly computed — single source of truth
     score = total_score
     signal = signal_computed
 
@@ -962,10 +708,6 @@ def main():
     fg_val = _latest(fg_df, "fg_value", 0)
     fg_cls = _latest(fg_df, "fg_classification", "")
     cdet["sentiment"]["fg_raw"] = fg_val  # raw 0-100 value for interpret_cluster
-    vix_val   = _latest(vix_df, "close", 0)
-    dxy_val   = _latest(dxy_df, "close", 0)
-    oil_val   = _latest(oil_df, "close", 0)
-    sp500_val = _latest(sp500_df, "close", 0)
 
     # News scores
     crypto_ns = _latest(ns_df, "crypto_score", 0.0)
@@ -998,7 +740,7 @@ def main():
         cycle_age = f"{age_m:.0f}min atrás"
         cycle_ok  = "✅" if age_m < 90 else ("⚠️" if age_m < 180 else "🔴")
 
-    # MA200 header snippet (pre-built to avoid backslash in f-string)
+    # MA200 header snippet
     if ma200_val:
         _ma200_c = "pos" if (ma200_pct or 0) >= 0 else "neg"
         _ma200_arrow = "↑" if (ma200_slope or 0) > 0 else "↓"
@@ -1039,7 +781,7 @@ def main():
     # =========================================================================
     st.markdown("### BOT 1 - Conservador")
 
-    # Score bar — color driven by signal_computed (kill switches already applied)
+    # Score bar
     score_pct = min(max((total_score / threshold) * 100, 0), 110) if threshold > 0 else 0
     if signal_computed == "BLOCK":
         bar_color = "#f85149"
@@ -1050,17 +792,14 @@ def main():
     else:
         bar_color = "#f85149"
 
-    # Score breakdown (regime mult + global conf, shown when either reduces score)
-    # Note: global_conf_mult already computed above (same portfolio key)
-    _score_gc_src  = portfolio.get("last_global_confidence_source", "") or ""
-    _show_gc = global_conf_mult < 0.95
-    if regime_multiplier != 1.0 or _show_gc:
+    # Score breakdown
+    if regime_multiplier != 1.0 or global_conf_mult < 0.95:
         _parts = [f'<span>Σ clusters (bruto): {total_score_raw:+.3f}</span>']
         if regime_multiplier != 1.0:
             _parts.append(
                 f'<span style="color:#d29922;">× Regime {regime} ({regime_multiplier}×)</span>'
             )
-        if _show_gc:
+        if global_conf_mult < 0.95:
             _gc_color_bd = "#f85149" if global_conf_mult < 0.5 else "#d29922"
             _parts.append(
                 f'<span style="color:{_gc_color_bd};">× GConf ({global_conf_mult:.2f}×)</span>'
@@ -1075,7 +814,7 @@ def main():
     else:
         multiplier_html = ""
 
-    # Kill switch banner (only when BLOCK is from a kill switch, not from Bear/score)
+    # Kill switch banner
     if signal_computed == "BLOCK" and block_reason_computed and block_reason_computed != "BLOCK_BEAR_REGIME":
         ks_html = (
             f'<div style="margin-top:6px; padding:4px 8px; background:#3d1a1a; border-radius:4px; '
@@ -1084,7 +823,7 @@ def main():
     else:
         ks_html = ""
 
-    # Threshold tooltip: quantile context from score history
+    # Threshold tooltip
     if not score_hist.empty and "total_score" in score_hist.columns:
         _hist_vals = score_hist["total_score"].dropna().tail(90).tolist()
         if len(_hist_vals) >= 5:
@@ -1204,7 +943,6 @@ def main():
     if not _b1h.empty:
         _b1h_disp = _b1h.copy()
 
-        # Calcular preços absolutos de SL/TP a partir dos percentuais salvos
         def _price_from_pct(row, pct_col, direction=1):
             ep = row.get("entry_price", 0) or 0
             pct = row.get(pct_col, 0) or 0
@@ -1279,7 +1017,7 @@ def main():
 
     # ── Valores atuais (todos já carregados no escopo) ─────────────────────
     _sz   = last_zs.get("stablecoin_z") if not zs_df.empty else None
-    _r1d  = pct_24h / 100  # ret_1d = pct_24h / 100 (pct_24h já em %)
+    _r1d  = pct_24h / 100  # ret_1d = pct_24h / 100
     _rsi2 = rsi_14
     _bb2  = bb_pct
     _ma21 = _latest(spot_df, "ma_21", 0.0) if not spot_df.empty else 0.0
@@ -1315,7 +1053,7 @@ def main():
     _news_val = float(crypto_ns) if crypto_ns is not None else 0.0
     _f_news = _b2_chk(_news_val, lambda v: v >= _news_min, lambda v: v >= _news_min - 0.5)
 
-    # Spike guard extra: ret_1d > 3% AND RSI > 65 → entrada tardia
+    # Spike guard extra
     _spike_block = bool(_r1d and _rsi2 and _r1d > _spike_ret_max and _rsi2 > _spike_rsi_max)
 
     _filters = [_f_sz, _f_r1d, _f_rsi, _f_bb, _f_ma21, _f_news]
@@ -1356,8 +1094,8 @@ def main():
     _rsi_str  = f"{_rsi2:.1f}" if _rsi2 is not None else "N/A"
     _bb_str   = f"{_bb2:.3f}" if _bb2 is not None else "N/A"
     _ma21_str = "ACIMA" if _above_ma21 else "ABAIXO"
-
     _news_str = f"{_news_val:+.2f}" if _news_val is not None else "N/A"
+
     _card(_fc[0], "💧", "Stablecoin Z",  _sz_str,   _f_sz[1],   f"> {_sz_min}",    "pos" if _f_sz[0] else "neg")
     _card(_fc[1], "📈", "Momentum 24h",  _r1d_str,  _f_r1d[1],  "> 0%",            "pos" if _f_r1d[0] else "neg")
     _card(_fc[2], "📊", "RSI",           _rsi_str,  _f_rsi[1],  f"> {_rsi_min}",   "pos" if _f_rsi[0] else "neg")
@@ -1455,391 +1193,6 @@ def main():
         st.info("Nenhum trade Bot 2 completado ainda.")
 
     # =========================================================================
-    # SECTION 3c: ETH — BOT 3 (Volume Defensivo)
-    # =========================================================================
-    st.markdown("---")
-    st.markdown("### ⚡ ETH - Bot 3 (Volume Defensivo)")
-    st.caption("Filosofia: mean reversion em volume baixo-médio (Q2). Conservador por natureza.")
-
-    _eth_port_path = ROOT / "data/04_scoring/portfolio_eth.json"
-    try:
-        _eth_port = json.loads(_eth_port_path.read_text()) if _eth_port_path.exists() else {}
-    except Exception:
-        _eth_port = {}
-
-    try:
-        from src.trading.eth_bot3 import compute_eth_features as _cef
-        _ef3 = _cef()
-    except Exception:
-        _ef3 = {}
-
-    _eth_spot_df  = load_parquet("data/01_raw/spot/eth_1h.parquet")
-    _eth_price    = float(_eth_spot_df["close"].iloc[-1]) if not _eth_spot_df.empty else None
-    _eth_capital  = float(_eth_port.get("capital_usd", 10000.0))
-    _eth_has_pos  = bool(_eth_port.get("has_position", False))
-    _eth_vol_z    = _ef3.get("volume_z")
-    _eth_rsi_v    = _ef3.get("rsi_14")
-    _eth_above200 = bool(_ef3.get("above_ma200", False))
-
-    _ec_h = st.columns(3)
-    _eth_px_s = f"${_eth_price:,.2f}" if _eth_price else "—"
-    _eth_cc   = "pos" if _eth_capital >= 10000 else "neg"
-    _ec_h[0].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">ETH PRICE</div><div class="cg-card-value">{_eth_px_s}</div></div>', unsafe_allow_html=True)
-    _ec_h[1].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">CAPITAL</div><div class="cg-card-value {_eth_cc}">${_eth_capital:,.2f}</div><div class="cg-card-sub {_eth_cc}">{(_eth_capital/10000-1)*100:+.2f}% vs início</div></div>', unsafe_allow_html=True)
-    _eth_pos_c = "pos" if _eth_has_pos else "neut"
-    _ec_h[2].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">POSIÇÃO</div><div class="cg-card-value {_eth_pos_c}">{"ABERTA" if _eth_has_pos else "—"}</div></div>', unsafe_allow_html=True)
-
-    if _eth_has_pos:
-        _ep_eth  = _eth_port.get("entry_price") or 0
-        _sl_eth  = _eth_port.get("stop_loss_price")
-        _tp_eth  = _eth_port.get("take_profit_price")
-        _ur_eth  = ((_eth_price / _ep_eth) - 1) * 100 if (_eth_price and _ep_eth) else 0
-        _urc_eth = "pos" if _ur_eth >= 0 else "neg"
-        _sl_es   = f"${_sl_eth:,.2f}" if _sl_eth else "—"
-        _tp_es   = f"${_tp_eth:,.2f}" if _tp_eth else "—"
-        st.markdown(f'<div class="cg-card" style="padding:8px 16px;font-size:12px;border-left:3px solid #3fb950;margin-top:8px;"><span style="color:#3fb950;font-weight:700;">🟢 POSIÇÃO ABERTA (Bot 3)</span> &nbsp;|&nbsp; <span style="color:#8b949e;">Entrada:</span> ${_ep_eth:,.2f} &nbsp;|&nbsp; <span style="color:#8b949e;">SL:</span> {_sl_es} &nbsp;|&nbsp; <span style="color:#8b949e;">TP:</span> {_tp_es} &nbsp;|&nbsp; <span style="color:#8b949e;">Atual:</span> {_eth_px_s} &nbsp;|&nbsp; <span class="{_urc_eth}" style="font-weight:700;">{_ur_eth:+.2f}%</span></div>', unsafe_allow_html=True)
-
-    _vol_z_min_e, _vol_z_max_e, _rsi_max_e = -0.75, -0.30, 60
-    _ef3_volq2  = bool(_eth_vol_z is not None and _vol_z_min_e < _eth_vol_z < _vol_z_max_e)
-    _ef3_rsi_ok = bool(_eth_rsi_v is not None and _eth_rsi_v < _rsi_max_e)
-    _n_eth_pass = sum([_ef3_volq2, _ef3_rsi_ok, _eth_above200])
-
-    if _n_eth_pass == 3:
-        st.success("✅ ENTRY ELEGÍVEL — 3/3 filtros")
-    elif _n_eth_pass == 0:
-        st.error("🛑 BLOCK — 0/3 filtros")
-    else:
-        st.warning(f"⏳ WAIT — {_n_eth_pass}/3 filtros passam")
-
-    _efc = st.columns(3)
-    _vol3_s = f"{_eth_vol_z:.2f}" if _eth_vol_z is not None else "N/A"
-    _rsi3_s = f"{_eth_rsi_v:.1f}" if _eth_rsi_v is not None else "N/A"
-    _card(_efc[0], "📊", "Volume Q2",   _vol3_s,                                "✅" if _ef3_volq2 else "❌",  "-0.75 < z < -0.30", "pos" if _ef3_volq2 else "neg")
-    _card(_efc[1], "📉", "RSI < 60",    _rsi3_s,                                "✅" if _ef3_rsi_ok else "❌", "< 60",              "pos" if _ef3_rsi_ok else "neg")
-    _card(_efc[2], "📈", "MA200 Trend", "ACIMA" if _eth_above200 else "ABAIXO", "✅" if _eth_above200 else "❌", "close > MA200",  "pos" if _eth_above200 else "neg")
-
-    st.markdown("#### 📊 Histórico Bot 3 — Trades")
-    _eth_tdf = load_parquet("data/05_output/trades_eth.parquet")
-    if _eth_tdf.empty:
-        st.info("Nenhum trade Bot 3 completado ainda.")
-    else:
-        _m3 = compute_bot_metrics(_eth_tdf)
-        if _m3["n_trades"] < 3:
-            st.caption("⚠️ Métricas preliminares — mínimo 20 trades para avaliação confiável.")
-        _mc3 = st.columns(5)
-        _mc3[0].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">TRADES</div><div style="font-size:16px;font-weight:700;">{_m3["n_trades"]}</div><div class="cg-card-sub">{_m3["wins"]}W / {_m3["losses"]}L</div></div>', unsafe_allow_html=True)
-        _wr3c = "pos" if _m3["win_rate"] >= 50 else "neg"
-        _mc3[1].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">WIN RATE</div><div class="cg-card-value {_wr3c}">{_m3["win_rate"]:.0f}%</div></div>', unsafe_allow_html=True)
-        _pf3c = "pos" if _m3["profit_factor"] >= 1.0 else "neg"
-        _pf3v = "∞" if _m3["profit_factor"] >= 99 else f'{_m3["profit_factor"]:.2f}'
-        _mc3[2].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">PROFIT FACTOR</div><div class="cg-card-value {_pf3c}">{_pf3v}</div></div>', unsafe_allow_html=True)
-        _tr3c = "pos" if _m3["total_return"] >= 0 else "neg"
-        _mc3[3].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">RETORNO</div><div class="cg-card-value {_tr3c}">{_m3["total_return"]:+.2f}%</div></div>', unsafe_allow_html=True)
-        _mc3[4].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">MAX DD</div><div class="cg-card-value neg">{_m3["max_drawdown"]:.2f}%</div></div>', unsafe_allow_html=True)
-
-    # =========================================================================
-    # SECTION 3d: SOL — BOT 4 (Taker/Flow)
-    # =========================================================================
-    st.markdown("---")
-    st.markdown("### 🟣 SOL - Bot 4 (Taker/Flow)")
-    st.caption("Filosofia: compra agressiva + fluxo saudável + contexto ETH. Hard gates + Bot 2 DNA.")
-
-    _sol_port_path = ROOT / "data/04_scoring/portfolio_sol.json"
-    try:
-        _sol_port = json.loads(_sol_port_path.read_text()) if _sol_port_path.exists() else {}
-    except Exception:
-        _sol_port = {}
-
-    try:
-        from src.trading.sol_bot4 import compute_sol_features as _csf
-        _sf4 = _csf()
-    except Exception:
-        _sf4 = {}
-
-    _sol_spot_df  = load_parquet("data/01_raw/spot/sol_1h.parquet")
-    _sol_price    = float(_sol_spot_df["close"].iloc[-1]) if not _sol_spot_df.empty else None
-    _sol_capital  = float(_sol_port.get("capital_usd", 10000.0))
-    _sol_has_pos  = bool(_sol_port.get("has_position", False))
-    _sol_px_s     = f"${_sol_price:,.2f}" if _sol_price else "—"
-
-    _sol_h = st.columns(3)
-    _sol_cc = "pos" if _sol_capital >= 10000 else "neg"
-    _sol_h[0].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">SOL PRICE</div><div class="cg-card-value">{_sol_px_s}</div></div>', unsafe_allow_html=True)
-    _sol_h[1].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">CAPITAL</div><div class="cg-card-value {_sol_cc}">${_sol_capital:,.2f}</div><div class="cg-card-sub {_sol_cc}">{(_sol_capital/10000-1)*100:+.2f}% vs início</div></div>', unsafe_allow_html=True)
-    _sol_pos_c = "pos" if _sol_has_pos else "neut"
-    _sol_h[2].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">POSIÇÃO</div><div class="cg-card-value {_sol_pos_c}">{"ABERTA" if _sol_has_pos else "—"}</div></div>', unsafe_allow_html=True)
-
-    if _sol_has_pos:
-        _ep_sol  = _sol_port.get("entry_price") or 0
-        _sl_sol  = _sol_port.get("stop_loss_price")
-        _tp_sol  = _sol_port.get("take_profit_price")
-        _th_sol  = _sol_port.get("trailing_high")
-        _et_sol  = _sol_port.get("entry_timestamp")
-        _mh_sol  = _sol_port.get("max_hold_until")
-        _ur_sol  = ((_sol_price / _ep_sol) - 1) * 100 if (_sol_price and _ep_sol) else 0
-        _urc_sol = "pos" if _ur_sol >= 0 else "neg"
-        _ets_sol = pd.to_datetime(_et_sol, utc=True).strftime("%m/%d %H:%M") if _et_sol else "?"
-        _mhs_sol = pd.to_datetime(_mh_sol, utc=True).strftime("%m/%d %H:%M") if _mh_sol else "?"
-        _sl_ss   = f"${_sl_sol:,.2f}" if _sl_sol else "—"
-        _tp_ss   = f"${_tp_sol:,.2f}" if _tp_sol else "—"
-        _th_ss   = f"${_th_sol:,.2f}" if _th_sol else "—"
-        st.markdown(f"""
-<div class="cg-card" style="padding:10px 16px; font-size:12px; border-left:3px solid #a371f7; margin-top:8px;">
-  <span style="color:#a371f7; font-weight:700;">🟣 POSIÇÃO ABERTA (Bot 4)</span>
-  &nbsp;|&nbsp; <span style="color:#8b949e;">Entrada:</span> ${_ep_sol:,.2f} ({_ets_sol})
-  &nbsp;|&nbsp; <span style="color:#8b949e;">SL:</span> {_sl_ss}
-  &nbsp;|&nbsp; <span style="color:#8b949e;">TP:</span> {_tp_ss}
-  &nbsp;|&nbsp; <span style="color:#8b949e;">Trail:</span> {_th_ss}
-  &nbsp;|&nbsp; <span style="color:#8b949e;">Max Hold:</span> {_mhs_sol}
-  &nbsp;|&nbsp; <span style="color:#8b949e;">Atual:</span> {_sol_px_s}
-  &nbsp;|&nbsp; <span class="{_urc_sol}" style="font-weight:700;">{_ur_sol:+.2f}%</span>
-</div>""", unsafe_allow_html=True)
-
-    # Hard gates
-    _taker_z4 = _sf4.get("taker_z_prev")
-    _oi_z24_4 = _sf4.get("oi_z_24h_max")
-    _eth_rh4  = _sf4.get("eth_ret_1h_prev")
-    _sol_rsi4 = _sf4.get("rsi")
-    _sol_ma21 = _sf4.get("ma21")
-    _sol_cl   = _sf4.get("close") or _sol_price or 0
-    _sol_ret1d = _sf4.get("ret_1d")
-    _sz_sol   = last_zs.get("stablecoin_z") if not zs_df.empty else None
-
-    _g1_ok = bool(_taker_z4 is not None and _taker_z4 > 0.3)
-    _g2_ok = bool(_oi_z24_4 is not None and _oi_z24_4 < 2.0)
-    _g3_ok = bool(_eth_rh4  is not None and _eth_rh4  > 0)
-
-    _hard_blocked = [n for n, p in [("Taker", _g1_ok), ("OI Block", _g2_ok), ("ETH", _g3_ok)] if not p]
-    st.markdown("##### 🎯 Hard Gates")
-    if not _hard_blocked:
-        st.success("✅ Hard gates PASS — 3/3")
-    else:
-        st.warning(f"⏳ Hard gates — bloqueado: {', '.join(_hard_blocked)}")
-
-    _hgc = st.columns(3)
-    _tk_s  = f"{_taker_z4:+.2f}" if _taker_z4 is not None else "N/A"
-    _oi_s  = f"{_oi_z24_4:+.2f}" if _oi_z24_4 is not None else "N/A"
-    _er_s  = f"{_eth_rh4*100:+.3f}%" if _eth_rh4 is not None else "N/A"
-    _card(_hgc[0], "🔥", "Taker Z",     _tk_s, "✅" if _g1_ok else "❌", "> 0.3",  "pos" if _g1_ok else "neg")
-    _card(_hgc[1], "📊", "OI Block",    _oi_s, "✅" if _g2_ok else "❌", "< 2.0 (bipolar)", "pos" if _g2_ok else "neg")
-    _card(_hgc[2], "🌉", "ETH Context", _er_s, "✅" if _g3_ok else "❌", "ret > 0", "pos" if _g3_ok else "neg")
-
-    # Bot 2 DNA filters
-    st.markdown("##### 🧬 Bot 2 DNA (Momentum)")
-    _dna_sz   = bool(_sz_sol is not None and _sz_sol > 1.3)
-    _dna_r1d  = bool(_sol_ret1d is not None and _sol_ret1d > 0)
-    _dna_rsi  = bool(_sol_rsi4 is not None and 60 < _sol_rsi4 < 80)
-    _dna_ma21 = bool(_sol_ma21 and _sol_cl and _sol_cl > _sol_ma21)
-    _dna_cols = st.columns(4)
-    _sz4_s    = f"{_sz_sol:.2f}" if _sz_sol is not None else "N/A"
-    _r1d4_s   = f"{_sol_ret1d*100:+.2f}%" if _sol_ret1d is not None else "N/A"
-    _rsi4_s   = f"{_sol_rsi4:.1f}" if _sol_rsi4 is not None else "N/A"
-    _ma4_s    = "ACIMA" if _dna_ma21 else "ABAIXO"
-    _card(_dna_cols[0], "💧", "Stablecoin Z", _sz4_s,  "✅" if _dna_sz else "❌",   "> 1.3",      "pos" if _dna_sz else "neg")
-    _card(_dna_cols[1], "📈", "Momentum 1d",  _r1d4_s, "✅" if _dna_r1d else "❌",  "> 0",        "pos" if _dna_r1d else "neg")
-    _card(_dna_cols[2], "📊", "RSI 60-80",    _rsi4_s, "✅" if _dna_rsi else "❌",  "60 < RSI < 80", "pos" if _dna_rsi else "neg")
-    _card(_dna_cols[3], "🔄", "Trend MA21",   _ma4_s,  "✅" if _dna_ma21 else "❌", "close > MA21", "pos" if _dna_ma21 else "neg")
-
-    # Shadow scoring log
-    st.markdown("##### 👻 Shadow Scoring Alternative")
-    st.caption("Score = taker×2 + eth×1 + oi×1 | Entry se score ≥ 3")
-    _shd_path = ROOT / "data/08_shadow/sol_scoring_shadow_log.jsonl"
-    try:
-        if _shd_path.exists():
-            _shd_lines = _shd_path.read_text().strip().splitlines()
-            if _shd_lines:
-                _shd_entries = [json.loads(l) for l in _shd_lines]
-                _shd_df = pd.DataFrame(_shd_entries)
-                _shd_total = len(_shd_df)
-                _shd_would_enter = int(_shd_df.get("scoring_would_enter", pd.Series(dtype=bool)).sum()) if "scoring_would_enter" in _shd_df.columns else 0
-                _shd_cols = st.columns(2)
-                _shd_cols[0].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">SHADOW ENTRIES</div><div style="font-size:18px;font-weight:700;">{_shd_total}</div></div>', unsafe_allow_html=True)
-                _shd_cols[1].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">WOULD-ENTER</div><div style="font-size:18px;font-weight:700;">{_shd_would_enter}</div></div>', unsafe_allow_html=True)
-                _disp_cols = ["timestamp", "score_total", "scoring_would_enter", "breakdown"] if all(c in _shd_df.columns for c in ["timestamp", "score_total", "scoring_would_enter"]) else list(_shd_df.columns[:5])
-                st.dataframe(_shd_df[_disp_cols].tail(5), use_container_width=True, hide_index=True)
-            else:
-                st.info("Shadow log existe mas está vazio.")
-        else:
-            st.info("Shadow log não encontrado — aguardando primeiro ciclo.")
-    except Exception as _shd_e:
-        st.caption(f"Shadow log indisponível: {_shd_e}")
-
-    # Bot 4 trades
-    st.markdown("#### 📊 Histórico Bot 4 — Trades")
-    _sol_tdf = load_sol_trades_json()
-    if _sol_tdf.empty:
-        if _sol_has_pos:
-            st.info(f"Nenhum trade Bot 4 completado. Primeira posição ativa: ${_sol_port.get('entry_price', 0):,.2f} (paper).")
-        else:
-            st.info("Nenhum trade Bot 4 completado ainda.")
-    else:
-        _m4 = compute_bot_metrics(_sol_tdf)
-        if _m4["n_trades"] < 3:
-            st.caption("⚠️ Métricas preliminares.")
-        _mc4 = st.columns(5)
-        _mc4[0].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">TRADES</div><div style="font-size:16px;font-weight:700;">{_m4["n_trades"]}</div><div class="cg-card-sub">{_m4["wins"]}W / {_m4["losses"]}L</div></div>', unsafe_allow_html=True)
-        _wr4c = "pos" if _m4["win_rate"] >= 50 else "neg"
-        _mc4[1].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">WIN RATE</div><div class="cg-card-value {_wr4c}">{_m4["win_rate"]:.0f}%</div></div>', unsafe_allow_html=True)
-        _pf4c = "pos" if _m4["profit_factor"] >= 1.0 else "neg"
-        _pf4v = "∞" if _m4["profit_factor"] >= 99 else f'{_m4["profit_factor"]:.2f}'
-        _mc4[2].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">PROFIT FACTOR</div><div class="cg-card-value {_pf4c}">{_pf4v}</div></div>', unsafe_allow_html=True)
-        _tr4c = "pos" if _m4["total_return"] >= 0 else "neg"
-        _mc4[3].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">RETORNO</div><div class="cg-card-value {_tr4c}">{_m4["total_return"]:+.2f}%</div></div>', unsafe_allow_html=True)
-        _mc4[4].markdown(f'<div class="cg-card" style="text-align:center;padding:8px;"><div class="cg-card-title">MAX DD</div><div class="cg-card-value neg">{_m4["max_drawdown"]:.2f}%</div></div>', unsafe_allow_html=True)
-
-    # =========================================================================
-    # SECTION 4: AI ANALYST (DeepSeek)
-    # =========================================================================
-    st.markdown("---")
-    st.markdown("### 🤖 AI Analyst (DeepSeek)")
-
-    if st.button("🔍 Gerar Análise", type="primary"):
-        # Price structure fields from spot_df
-        _bb_upper  = _latest(spot_df, "bb_upper",  None)
-        _bb_middle = _latest(spot_df, "bb_middle", None)
-        _bb_lower  = _latest(spot_df, "bb_lower",  None)
-        _ma50      = _latest(spot_df, "ma_50",     None)
-        _ma99      = _latest(spot_df, "ma_99",     None)
-        _ma200_sp  = _latest(spot_df, "ma_200",    None)  # spot_df value (fallback for ma200_val)
-        _atr_14    = _latest(spot_df, "atr_14",    None)
-        _high_7d   = _latest(spot_df, "high_7d",   None)
-        _low_7d    = _latest(spot_df, "low_7d",    None)
-        _high_30d  = _latest(spot_df, "high_30d",  None)
-        _low_30d   = _latest(spot_df, "low_30d",   None)
-
-        # Fed events in next 14 days from calendar
-        _today = pd.Timestamp.now(tz="UTC").date()
-        _fed_events_14d = []
-        for _ev in (cal.get("fomc_dates", []) + cal.get("hearings", [])
-                    + cal.get("transitions", [])):
-            _raw = _ev.get("date") or _ev.get("start") or _ev.get("decision_date")
-            if _raw:
-                try:
-                    _d = pd.Timestamp(_raw).date()
-                    _days = (_d - _today).days
-                    if 0 <= _days <= 14:
-                        _fed_events_14d.append(
-                            f"{_d} ({_days}d): {_ev.get('description') or _ev.get('type','?')}"
-                        )
-                except Exception:
-                    pass
-
-        # Fed Observatory (fast — reads parquets, no API)
-        _fed_obs = {}
-        if _FED_OBS_AVAILABLE:
-            try:
-                _fed_obs = estimate_rate_probability(load_fed_data())
-            except Exception:
-                pass
-
-        _news_det = cdet.get("news", {})
-        context = {
-            # Preço e regime
-            "ts": pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M UTC"),
-            "price": price, "pct_24h": pct_24h, "regime": regime,
-            "rsi": rsi_14 or 50.0, "bb_pct": bb_pct or 0.5,
-            "bb_upper": _bb_upper, "bb_middle": _bb_middle, "bb_lower": _bb_lower,
-            "ma50": _ma50, "ma100": _ma99,
-            "ma200_val": ma200_val or _ma200_sp,
-            "ma200_pct": ma200_pct, "ma200_slope": ma200_slope,
-            "atr_14": _atr_14,
-            "high_7d": _high_7d, "low_7d": _low_7d,
-            "high_30d": _high_30d, "low_30d": _low_30d,
-            # Sinal e score
-            "signal": signal, "score": total_score,
-            "score_raw": total_score_raw, "regime_multiplier": regime_multiplier,
-            "threshold": threshold, "block_reason": block_reason_computed,
-            # Clusters
-            "c_technical": clusters["technical"], "c_positioning": clusters["positioning"],
-            "c_macro": clusters["macro"], "c_liquidity": clusters["liquidity"],
-            "c_sentiment": clusters["sentiment"], "c_news": clusters["news"],
-            # Derivativos
-            "oi_z": zs.get("oi_z", 0), "funding_z": zs.get("funding_z", 0),
-            "taker_z": zs.get("taker_z", 0),
-            "ls_account": ls_account_val, "ls_position": ls_position_val,
-            "whale_signal": ws_label,
-            # Liquidez
-            "stablecoin_z": zs.get("stablecoin_z", 0), "etf_z": zs.get("etf_z", 0),
-            # Macro z-scores
-            "dgs10_z": zs.get("dgs10_z", 0), "dgs2_z": zs.get("dgs2_z", 0),
-            "curve_z": zs.get("curve_z", 0), "rrp_z": zs.get("rrp_z", 0),
-            # Fed
-            "fed_event": fomc.get("next_event", "N/A"),
-            "fed_days": fomc.get("days_away", "—"),
-            "fed_adj": fomc.get("proximity_adj", 0),
-            "fed_events_14d": _fed_events_14d,
-            "fed_obs": _fed_obs,
-            # Sentimento
-            "fg_val": fg_val, "fg_cls": fg_cls,
-            "fg_z": zs.get("fg_z", 0), "bubble_z": zs.get("bubble_z", 0),
-            "crypto_news_score": _news_det.get("crypto_score", 0),
-            "fed_news_score": _news_det.get("fed_score", 0),
-            # Capital
-            "capital": capital, "has_position": portfolio.get("has_position", False),
-        }
-        with st.spinner("Consultando DeepSeek v4-pro (pode levar até 2 min)..."):
-            analysis = call_deepseek_analyst(context)
-        st.markdown('<div class="cg-card" style="font-size:14px; line-height:1.7;">',
-                    unsafe_allow_html=True)
-        st.markdown(analysis)
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # =========================================================================
-    # SECTION 4: WHALE TRACKING — DESABILITADO TEMPORARIAMENTE
-    # =========================================================================
-    # TODO (futuro): reativar após validação estatística do L/S ratio.
-    # Análise pendente:
-    #   - Correlação L/S ratio vs forward returns (estilo SOL EDA Phase 1)
-    #   - Cohen's d em shocks ±2σ
-    #   - Se |corr| > 0.1 e p < 0.05 → considerar gate no Bot 1 ou Bot 4
-    # Código preservado abaixo — não deletar.
-    #
-    # ENABLE_WHALE_TRACKING = False
-    #
-    # st.markdown("---")
-    # st.markdown("### 🐋 Whale Tracking")
-    # col_w1, col_w2 = st.columns([1, 2])
-    # with col_w1:
-    #     ws_c = "neg" if "🔴" in ws_label else ("pos" if "🟢" in ws_label else "neut")
-    #     lsa_delta = ""
-    #     if len(lsa_df) > 24:
-    #         lsa_prev = lsa_df["longShortRatio"].iloc[-25]
-    #         lsa_d = (ls_account_val - lsa_prev)
-    #         lsa_delta = f"({lsa_d:+.3f} vs 24h)"
-    #     lsp_c = "pos" if (ls_position_val or 1) > 1.0 else "neg"
-    #     st.markdown(f"""
-    # <div class="cg-card">
-    #   <div class="cg-card-title">Top Accounts L/S Ratio</div>
-    #   <div class="cg-card-value {ws_c}">{ls_account_val:.3f} {lsa_delta}</div>
-    #   <div class="cg-card-sub">Top Positions: <span class="{lsp_c}">{ls_position_val:.3f}</span></div>
-    #   <div class="cg-card-interp"><strong>{ws_label}</strong><br>{ws_text}</div>
-    # </div>""", unsafe_allow_html=True)
-    # with col_w2:
-    #     if not lsa_df.empty and len(lsa_df) > 48:
-    #         lsa_7d = lsa_df.tail(168)
-    #         spot_7d = spot_df.tail(168) if not spot_df.empty else pd.DataFrame()
-    #         fig = make_subplots(specs=[[{"secondary_y": True}]])
-    #         fig.add_trace(go.Scatter(
-    #             x=lsa_7d["timestamp"], y=lsa_7d["longShortRatio"],
-    #             name="L/S Accounts", line=dict(color=BLUE, width=1.5)
-    #         ), secondary_y=False)
-    #         if not spot_7d.empty:
-    #             fig.add_trace(go.Scatter(
-    #                 x=spot_7d["timestamp"], y=spot_7d["close"],
-    #                 name="BTC Price", line=dict(color=AMBER, width=1.5, dash="dot")
-    #             ), secondary_y=True)
-    #         fig.add_hline(y=1.0, line_dash="dash", line_color=GREY, opacity=0.4)
-    #         fig.update_layout(**PLOTLY, height=200, showlegend=True,
-    #                           legend=dict(orientation="h", y=1.1))
-    #         fig.update_yaxes(title_text="L/S Ratio", secondary_y=False)
-    #         fig.update_yaxes(title_text="BTC $", secondary_y=True)
-    #         st.plotly_chart(fig, use_container_width=True)
-
-    # SECTION 5: DERIVATIVES — REMOVIDO (já implícito nos bots)
-
-    # SECTION 6: MACRO — REMOVIDO (já implícito no Gate Scoring)
-
-    # =========================================================================
     # SECTION 8: NEWS & SENTIMENT
     # =========================================================================
     st.markdown("---")
@@ -1888,7 +1241,7 @@ def main():
 </div>""", unsafe_allow_html=True)
 
     with col_n2:
-        # F&G + Fed Sentinel card
+        # F&G card
         fg_c = "neg" if (fg_val or 0) < 30 else ("warn" if fg_val < 60 else "pos")
         st.markdown(f"""
 <div class="cg-card">
@@ -1898,10 +1251,8 @@ def main():
   <div class="cg-card-sub">z={zs.get('fg_z',0):.2f}</div>
 </div>""", unsafe_allow_html=True)
 
-
-
     # =========================================================================
-    # SECTION 9: FED SENTINEL (consolidado — Observatory + Sentinel)
+    # SECTION 9: FED SENTINEL
     # =========================================================================
     st.markdown("---")
     st.markdown("### 🏛️ Fed Sentinel")
@@ -1914,7 +1265,7 @@ def main():
         _prob     = estimate_rate_probability(_fed_data)
         _analysis = get_scenario_analysis(_prob)
 
-        # --- Probability cards ---
+        # Probability cards
         col_fo1, col_fo2, col_fo3 = st.columns(3)
         with col_fo1:
             _pct = _prob["prob_cut"] * 100
@@ -1945,7 +1296,7 @@ def main():
   <div class="cg-card-sub">BTC: Bearish</div>
 </div>""", unsafe_allow_html=True)
 
-        # --- Sentinel status (next event) ---
+        # Sentinel status
         st.markdown("**📅 Próximo evento**")
         _fs_c1, _fs_c2, _fs_c3, _fs_c4 = st.columns(4)
         _fs_c1.metric("Evento", fomc.get("next_event", "N/A"))
@@ -1953,7 +1304,7 @@ def main():
         _fs_c3.metric("Proximity adj", f"+{fomc.get('proximity_adj', 0):.1f}")
         _fs_c4.metric("Blackout", "Sim ⚠️" if fomc.get("in_blackout") else "Não")
 
-        # --- Indicators ---
+        # Indicators
         _ind = _prob.get("indicators", {})
         _ind_cols = st.columns(5)
         _ind_list = [
@@ -1975,7 +1326,7 @@ def main():
                 else:
                     st.metric(_name, "N/A")
 
-        # --- Scenarios ---
+        # Scenarios
         st.markdown("**🎯 Cenários por decisão:**")
         _color_map = {"green": "#3fb950", "gray": "#8b949e", "red": "#f85149"}
         for _sc in _analysis["scenarios"]:
@@ -1990,7 +1341,7 @@ def main():
   <br><span style="font-size:0.8em; color:#6e7681;">{_sc["description"]}</span>
 </div>""", unsafe_allow_html=True)
 
-        # --- Member sentiment ---
+        # Member sentiment
         if _analysis.get("member_summary"):
             _ms = _analysis["member_summary"]
             st.markdown(
@@ -2001,7 +1352,7 @@ def main():
                 f"→ Tendência: **{_ms['trend']}**"
             )
 
-        # --- Fed agenda ---
+        # Fed agenda
         try:
             with open("conf/fed_calendar.json") as _f:
                 _cal = json.load(_f)
@@ -2028,572 +1379,255 @@ def main():
     except Exception as _e:
         st.warning(f"Fed Sentinel indisponível: {_e}")
 
-        # =========================================================================
-    # SECTION 7: SYSTEM HEALTH
+    # ── Final footer ───────────────────────────────────────────────────────
+    st.caption(f"btc-trading-v1 | Limpo: ETH/SOL removidos | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | Auto-refresh: {'ON' if auto_refresh else 'OFF'}")
+
+# ===========================================================================
+# NOVO: Condicional para selecionar visão (Painel Principal ou Admin)
+# ===========================================================================
+if view == "Painel Principal":
+    if __name__ == "__main__" or True:
+        main()
+elif view == "Admin":
     # =========================================================================
-    st.markdown("---")
-    st.markdown("### ⚙️ System Health")
+    # ADMIN PANEL
+    # =========================================================================
+    st.header("🔧 Painel de Administração")
+    st.caption(f"Última atualização: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
 
-    col_h1, col_h2 = st.columns([1, 2])
+    # ── 1. STATUS DOS BOTS ────────────────────────────────────────────────────
+    st.subheader("🤖 Status dos Bots")
 
-    with col_h1:
-        # Staleness check
-        stale_checks = {
-            "Binance Spot":  (_age_h(spot_df),    3),
-            "Futures OI":    (_age_h(oi_df),       3),
-            "FRED Macro":    (_age_h(macro_df),   48),
-            "CoinGlass":     (_age_h(bubble_df),  72),
-            "Fear & Greed":  (_age_h(fg_df),      48),
-            "News":          (_age_h(load_news("crypto")), 4),
-            "Z-scores":      (_age_h(zs_df),       3),
-        }
-        stale_list = []
-        st.markdown("**Fontes de dados:**")
-        for name, (age, tol) in stale_checks.items():
-            ok = age < tol
-            icon = "✅" if ok else "⚠️"
-            age_str = f"{age:.1f}h" if age < 9999 else "MISSING"
-            color = "" if ok else "color:#d29922;"
-            st.markdown(f'<span style="{color}">{icon} {name}: {age_str}</span>', unsafe_allow_html=True)
-            if not ok:
-                stale_list.append(name)
-
-        st.markdown(f"**Stale:** {len(stale_list)} fonte(s)" + (f": {', '.join(stale_list)}" if stale_list else " — tudo OK"))
-
-        # DeepSeek balance card
-        _ds = get_deepseek_balance()
-        _ds_bal = _ds["balance_usd"]
-        _ds_avail = _ds["available"]
-        _ds_err = _ds["error"]
-        if _ds_err:
-            _ds_color = "#f85149"
-            _ds_status = "🔴 erro"
-        elif _ds_bal > 1.00:
-            _ds_color = "#3fb950"
-            _ds_status = "✅ disponível"
-        elif _ds_bal > 0.20:
-            _ds_color = "#d29922"
-            _ds_status = "🟡 baixo"
-        else:
-            _ds_color = "#f85149"
-            _ds_status = "🔴 crítico"
-        st.markdown("**DeepSeek API:**")
-        _ds_err_html = (
-            '<br><span style="color:#d29922;font-size:0.8em;">⚠️ ' + _ds_err[:60] + "</span>"
-            if _ds_err else ""
-        )
-        st.markdown(
-            f'<div style="border-left:3px solid {_ds_color};padding:6px 10px;margin:4px 0;'
-            f'background:rgba(0,0,0,0.15);border-radius:4px;font-size:0.85em;">'
-            f'💰 Saldo: <b style="color:{_ds_color};">${_ds_bal:.2f} USD</b> — {_ds_status}<br>'
-            f'G2a (chat):&nbsp;&nbsp;ativo<br>'
-            f'G2b (R1):&nbsp;&nbsp;&nbsp;&nbsp;shadow mode'
-            f'{_ds_err_html}'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
-
-        # ── Analyst Context card ─────────────────────────────────────────
-        st.markdown("**📝 Contexto do Analista:**")
-        _ac = load_analyst_context()
-
-        # Age / expiry display
-        if _ac:
-            try:
-                _ac_ts  = pd.Timestamp(_ac.get("updated_at", ""), tz="UTC")
-                _ac_age = (pd.Timestamp.now(tz="UTC") - _ac_ts).total_seconds() / 3600
-                _ac_exp = max(0.0, 12.0 - _ac_age)
-                _ac_ts_str  = _ac_ts.strftime("%d/%m %H:%M UTC")
-                _ac_ago_str = f"{_ac_age:.1f}h atrás"
-                _exp_str    = f"{int(_ac_exp)}h {int((_ac_exp % 1) * 60):02d}min"
-                if _ac_age < 8:
-                    _ac_hdr_color = "#3fb950"
-                elif _ac_age < 12:
-                    _ac_hdr_color = "#d29922"
-                else:
-                    _ac_hdr_color = "#f85149"
-                st.markdown(
-                    f'<div style="font-size:0.8em;color:{_ac_hdr_color};">'
-                    f'Atualizado: {_ac_ts_str} ({_ac_ago_str}) — Expira em: {_exp_str}'
-                    f'{"  ⚠️ EXPIRADO" if _ac_age >= 12 else ""}</div>',
-                    unsafe_allow_html=True,
-                )
-            except Exception:
-                _ac_age = 99.0
-                _ac_hdr_color = "#f85149"
-
-        # Form fields
-        with st.form("analyst_ctx_form", clear_on_submit=False):
-            _fc1, _fc2, _fc3 = st.columns([1, 1, 2])
-            _bias_opts = ["BEAR", "SIDEWAYS", "BULL"]
-            _conf_opts = ["high", "medium", "low"]
-            _cur_bias  = (_ac or {}).get("bias", "SIDEWAYS")
-            _cur_conf  = (_ac or {}).get("confidence", "medium")
-            _cur_horiz = (_ac or {}).get("horizon", "24-48h")
-            _cur_ctx   = (_ac or {}).get("context", "")
-            _cur_tags  = ", ".join((_ac or {}).get("tags", []))
-
-            with _fc1:
-                _new_bias = st.selectbox("Viés", _bias_opts,
-                    index=_bias_opts.index(_cur_bias) if _cur_bias in _bias_opts else 0,
-                    key="ac_bias")
-            with _fc2:
-                _new_conf = st.selectbox("Confiança", _conf_opts,
-                    index=_conf_opts.index(_cur_conf) if _cur_conf in _conf_opts else 0,
-                    key="ac_conf")
-            with _fc3:
-                _new_horiz = st.text_input("Horizonte", value=_cur_horiz, key="ac_horizon")
-
-            _new_ctx = st.text_area("Percepção", value=_cur_ctx, height=120, key="ac_context")
-            _new_tags_raw = st.text_input("Tags (separadas por vírgula)", value=_cur_tags, key="ac_tags")
-
-            _submitted = st.form_submit_button("💾 Salvar Contexto")
-            if _submitted:
-                _tags_list = [t.strip() for t in _new_tags_raw.split(",") if t.strip()]
-                save_analyst_context({
-                    "author":     "Edmundo",
-                    "horizon":    _new_horiz,
-                    "context":    _new_ctx,
-                    "bias":       _new_bias,
-                    "confidence": _new_conf,
-                    "tags":       _tags_list,
-                })
-                # Next 4h cron fire
-                _now_h = pd.Timestamp.now(tz="UTC").hour
-                _next_h = ((_now_h // 4) + 1) * 4 % 24
-                _mins_to_next = ((_next_h - pd.Timestamp.now(tz="UTC").hour) * 60
-                                 - pd.Timestamp.now(tz="UTC").minute) % (4 * 60)
-                st.success(f"Contexto salvo — próximo ciclo G2b em ~{_mins_to_next} min (às {_next_h:02d}:00 UTC)")
-
-        # Last G2b output
+    _cm_path = ROOT / "data/04_scoring/capital_manager.json"
+    _cm = {}
+    if _cm_path.exists():
         try:
-            _nr = pd.read_parquet(ROOT / "data/02_features/news_regime.parquet")
-            if not _nr.empty:
-                _nr_last = _nr.iloc[-1]
-                _nr_ts   = pd.Timestamp(_nr_last.get("timestamp", pd.NaT))
-                _nr_ts_s = _nr_ts.strftime("%H:%M UTC") if not pd.isna(_nr_ts) else "?"
-                _nr_reg  = _nr_last.get("regime_hint", "?")
-                _nr_conf = float(_nr_last.get("confidence", 0))
-                _nr_rsn  = str(_nr_last.get("reasoning", ""))[:80]
-                _nr_abias = _nr_last.get("analyst_bias", None)
-                _nr_reg_color = {"BULL": "#3fb950", "BEAR": "#f85149"}.get(_nr_reg, "#d29922")
-                st.markdown(
-                    f'<div style="font-size:0.8em;border-left:2px solid #444;'
-                    f'padding:4px 8px;margin-top:6px;">'
-                    f'<b>Último G2b ({_nr_ts_s}):</b><br>'
-                    f'Regime: <b style="color:{_nr_reg_color};">{_nr_reg}</b> | '
-                    f'Conf: {_nr_conf:.2f}<br>'
-                    f'Reasoning: <i>"{_nr_rsn}"</i><br>'
-                    f'{"Analyst bias usado: <b>" + str(_nr_abias) + "</b>" if _nr_abias and str(_nr_abias) != "nan" else "Sem analyst bias"}'
-                    f'</div>',
-                    unsafe_allow_html=True,
-                )
+            _cm = json.loads(_cm_path.read_text())
         except Exception:
             pass
 
-        # Cron info
-        st.markdown("**Cron:**")
-        st.markdown(f"Hourly: {cycle_age} {cycle_ok}")
-        if cycle_info.get("last_line"):
-            st.caption(cycle_info["last_line"][-80:])
-
-    with col_h2:
-        # Score history chart (7 days)
-        if not score_hist.empty and len(score_hist) > 2:
-            sh = score_hist.tail(168)
-            regime_hist_7d = regime_df.tail(7) if not regime_df.empty else pd.DataFrame()
-
-            fig = go.Figure()
-            # Regime background bands
-            if not regime_hist_7d.empty:
-                for _, row in regime_hist_7d.iterrows():
-                    r_color = {"Bull": "rgba(63,185,80,0.08)", "Bear": "rgba(248,81,73,0.08)"}.get(row["regime"], "rgba(210,153,34,0.08)")
-                    next_day = row["timestamp"] + pd.Timedelta(days=1)
-                    fig.add_vrect(x0=row["timestamp"], x1=next_day, fillcolor=r_color, layer="below", line_width=0)
-
-            fig.add_trace(go.Scatter(
-                x=sh["timestamp"], y=sh["total_score"],
-                name="Score", line=dict(color=BLUE, width=2),
-                fill="tozeroy", fillcolor="rgba(88,166,255,0.1)",
-            ))
-            if "threshold" in sh.columns:
-                fig.add_trace(go.Scatter(
-                    x=sh["timestamp"], y=sh["threshold"],
-                    name="Threshold", line=dict(color=AMBER, width=1.5, dash="dash"),
-                ))
-            fig.add_hline(y=0, line_color=GREY, opacity=0.3)
-            fig.update_layout(**PLOTLY, height=220, title="Score History (últimas 168 leituras)")
-            st.plotly_chart(fig, use_container_width=True)
-
-    # ── Calibration data (shared by Model Health + Calibration Alerts) ────────
-    _GATE_CORR_MAP = {
-        "oi_z":         ("g4_oi",       "G4 OI"),
-        "taker_z":      ("g9_taker",    "G9 Taker"),
-        "funding_z":    ("g10_funding", "G10 Funding"),
-        "dgs10_z":      ("g3_dgs10",    "G3 DGS10"),
-        "curve_z":      ("g3_curve",    "G3 Curve"),
-        "stablecoin_z": ("g5_stable",   "G5 Stablecoin"),
-        "bubble_z":     ("g6_bubble",   "G6 Bubble"),
-        "etf_z":        ("g7_etf",      "G7 ETF"),
-        "fg_z":         ("g8_fg",       "G8 F&G"),
+    _buckets = _cm.get("buckets", {})
+    _bot_meta = {
+        "btc":  {"label": "Bot 1+2 (BTC)",  "icon": "₿",  "color": "#f7931a"},
+        "eth":  {"label": "Bot 3 (ETH)",     "icon": "Ξ",  "color": "#627eea"},
+        "sol":  {"label": "Bot 4 (SOL) ⏸",  "icon": "◎",  "color": "#9945ff"},
     }
-    calib_rows: list = []
-    _calib_error: str = ""
-    try:
-        _params = load_params()
-        _gp = _params.get("gate_params", {})
-        _zs_cal = zs_df.copy()
-        if "timestamp" not in _zs_cal.columns:
-            _zs_cal = _zs_cal.reset_index()
-        _zs_cal["timestamp"] = pd.to_datetime(_zs_cal["timestamp"], utc=True)
-        _zs_cal = _zs_cal.set_index("timestamp").resample("1D").last()
-        _spot_cal = spot_df.copy()
-        if not _spot_cal.empty:
-            _spot_cal["timestamp"] = pd.to_datetime(_spot_cal["timestamp"], utc=True)
-            _spot_ret = _spot_cal.set_index("timestamp").resample("1D")["close"].last().pct_change(3) * 100
-            _spot_ret = _spot_ret.shift(-1)
-        else:
-            _spot_ret = pd.Series(dtype=float)
+    _portfolio_btc = load_portfolio()
+    _b1_b2_pos = _portfolio_btc.get("has_position", False)
 
-        for zcol, (gkey, gname) in _GATE_CORR_MAP.items():
-            if zcol not in _zs_cal.columns or _spot_ret.empty:
-                continue
-            _m = _zs_cal[zcol].to_frame().join(_spot_ret.rename("ret3d")).dropna()
-            _m30 = _m.tail(30)
-            if len(_m30) < 10:
-                continue
-            corr_now = float(_m30[zcol].corr(_m30["ret3d"]))
-            corr_cfg = float(_gp.get(gkey, [0])[0]) if gkey in _gp else None
-            if corr_cfg is None:
-                continue
-            diff = abs(corr_now - corr_cfg)
-            _gcfg = _gp.get(gkey, [])
-            weight = float(_gcfg[2]) if len(_gcfg) >= 3 else 1.0
-            calib_rows.append({
-                "gate": gname, "corr_cfg": corr_cfg, "corr_30d": corr_now,
-                "diff": diff, "weight": weight, "n": len(_m30),
-            })
-    except Exception as _e:
-        _calib_error = str(_e)
+    if _buckets:
+        _bcols = st.columns(len(_buckets))
+        for _bi, (_bk, _bv) in enumerate(_buckets.items()):
+            _meta     = _bot_meta.get(_bk, {"label": _bk.upper(), "icon": "?", "color": "#8b949e"})
+            _cap      = _bv.get("current_capital_usd", 0)
+            _ini      = _bv.get("initial_capital_usd", 10000)
+            _pnl      = _bv.get("realized_pnl", 0)
+            _pnl_pct  = (_cap / _ini - 1) * 100 if _ini else 0
+            _has_pos  = _bv.get("has_position", False)
+            _bot_src  = _bv.get("bot_origin") or "—"
+            _enabled  = _bv.get("enabled", True)
+            _ntrades  = _bv.get("n_trades_total", 0)
+            _nwins    = _bv.get("n_wins", 0)
+            _nloss    = _bv.get("n_losses", 0)
 
-    # ── BOT 1 MONITORAMENTO (Model Health + Calibration + Adaptive — consolidado) ──
-    st.markdown("---")
-    st.markdown("### 🛡️ BOT 1 - Monitoramento")
-    st.caption("Saúde estatística do Gate Scoring v2 — calibração, adaptive weights e kill switches")
+            if not _enabled:
+                _status_icon, _status_txt = "⏸", "Pausado"
+            elif _has_pos:
+                _status_icon, _status_txt = "🟢", "Em posição"
+            else:
+                _status_icon, _status_txt = "🔵", "Aguardando"
 
-    if _calib_error:
-        st.warning(f"⚠️ Dados de calibração indisponíveis: {_calib_error}")
-    elif not calib_rows:
-        st.info("Dados insuficientes para análise (< 10 dias de z-scores)")
+            with _bcols[_bi]:
+                st.markdown(f"""
+<div class="cg-card" style="border-left:3px solid {_meta['color']};">
+  <div class="cg-card-title">{_meta['icon']} {_meta['label']}</div>
+  <div class="cg-card-value" style="font-size:20px;">${_cap:,.2f}</div>
+  <div class="cg-card-sub {'pos' if _pnl_pct >= 0 else 'neg'}">{_pnl_pct:+.2f}% (PnL ${_pnl:+.2f})</div>
+  <div class="cg-card-interp">
+    {_status_icon} {_status_txt} &nbsp;|&nbsp; Trades: {_ntrades} ({_nwins}W/{_nloss}L)
+    {f"<br>Bot: {_bot_src}" if _has_pos else ""}
+  </div>
+</div>""", unsafe_allow_html=True)
     else:
-        _mh_cfg     = _params.get("model_health", {})
-        _th_healthy = _mh_cfg.get("threshold_healthy", 0.15)
-        _th_warning = _mh_cfg.get("threshold_warning", 0.30)
+        st.info("capital_manager.json não encontrado.")
 
-        _total_w   = sum(r["weight"] for r in calib_rows)
-        _model_aln = sum(r["diff"] * r["weight"] for r in calib_rows) / _total_w
-
-        _aw_cfg          = _params.get("adaptive_weights", {})
-        _adaptive_details = portfolio.get("last_adaptive_weights", {})
-        _gc_val          = portfolio.get("last_global_confidence_multiplier", 1.0) or 1.0
-
-        _n_extreme = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "extreme") if _adaptive_details else 0
-        _kill_gates = [d.get("gate", k) for k, d in _adaptive_details.items() if d.get("kill_status") == "extreme"] if _adaptive_details else []
-
-        # ── 3 Summary Cards ────────────────────────────────────────────────
-        _mon_c1, _mon_c2, _mon_c3 = st.columns(3)
-
-        # Card 1: Model Alignment
-        if _model_aln < _th_healthy:
-            _aln_color, _aln_badge = "#3fb950", "🟢 Saudável"
-        elif _model_aln < _th_warning:
-            _aln_color, _aln_badge = "#d29922", "🟡 Atenção"
-        else:
-            _aln_color, _aln_badge = "#f85149", "🔴 Desalinhado"
-
-        with _mon_c1:
-            st.markdown(f"""
-<div class="cg-card" style="text-align:center;padding:12px;border-left:4px solid {_aln_color};">
-  <div class="cg-card-title">🎯 MODEL ALIGNMENT</div>
-  <div class="cg-card-value" style="color:{_aln_color};">{_model_aln:.3f}</div>
-  <div class="cg-card-sub">{_aln_badge}</div>
-</div>""", unsafe_allow_html=True)
-
-        # Card 2: Global Confidence
-        _reduction = (1 - _gc_val) * 100
-        if _gc_val >= 0.8:
-            _gc_color, _gc_badge = "#3fb950", "🟢 Normal"
-        elif _gc_val >= 0.5:
-            _gc_color, _gc_badge = "#d29922", f"🟡 Reduzido -{_reduction:.0f}%"
-        else:
-            _gc_color, _gc_badge = "#f85149", f"🔴 Severo -{_reduction:.0f}%"
-
-        with _mon_c2:
-            _aw_enabled = _aw_cfg.get("enabled", False)
-            _gc_disp = f"×{_gc_val:.3f}" if _aw_enabled else "OFF"
-            st.markdown(f"""
-<div class="cg-card" style="text-align:center;padding:12px;border-left:4px solid {_gc_color};">
-  <div class="cg-card-title">⚖️ GLOBAL CONFIDENCE</div>
-  <div class="cg-card-value" style="color:{_gc_color};">{_gc_disp}</div>
-  <div class="cg-card-sub">{_gc_badge if _aw_enabled else "adaptive weights off"}</div>
-</div>""", unsafe_allow_html=True)
-
-        # Card 3: Kill Switches
-        if _n_extreme == 0:
-            _ks_color, _ks_badge, _ks_val = "#3fb950", "🟢 Nenhum", "0 gates"
-        elif _n_extreme <= 2:
-            _ks_color = "#d29922"
-            _ks_badge = "🟡 Alguns"
-            _ks_val = f"{_n_extreme} gates"
-        else:
-            _ks_color = "#f85149"
-            _ks_badge = "🔴 Múltiplos"
-            _ks_val = f"{_n_extreme} gates"
-
-        with _mon_c3:
-            _ks_names = ", ".join(_kill_gates[:3]) if _kill_gates else "—"
-            st.markdown(f"""
-<div class="cg-card" style="text-align:center;padding:12px;border-left:4px solid {_ks_color};">
-  <div class="cg-card-title">💀 KILL SWITCHES</div>
-  <div class="cg-card-value" style="color:{_ks_color};">{_ks_val}</div>
-  <div class="cg-card-sub">{_ks_badge}: {_ks_names}</div>
-</div>""", unsafe_allow_html=True)
-
-        # Leitura interpretativa
-        if _model_aln >= _th_warning or _gc_val < 0.5:
-            st.warning("⚠️ Bot 1 com capacidade reduzida. Considerar recalibrar gates em 2-4 semanas.")
-        elif _model_aln >= _th_healthy or _gc_val < 0.8:
-            st.info("ℹ️ Bot 1 com leve degradação. Monitorar evolução.")
-        else:
-            st.success("✅ Bot 1 saudável. Gates alinhados com correlações configuradas.")
-
-        # ── Detalhes completos em expander ─────────────────────────────────
-        with st.expander("🔍 Detalhes completos (Calibration + Adaptive por gate)", expanded=False):
-
-            # Calibration Alerts
-            st.markdown("**📐 Calibration Alerts (rolling 30d corr vs parameters.yml)**")
-            _cal_rows = sorted(calib_rows, key=lambda x: -x["diff"])
-            _cal_data = []
-            for r in _cal_rows:
-                icon = "🔴" if r["diff"] > 0.25 else ("⚠️" if r["diff"] > 0.15 else "✅")
-                _cal_data.append({
-                    "": icon,
-                    "Gate": r["gate"],
-                    "corr_cfg": f"{r['corr_cfg']:+.3f}",
-                    "corr_30d": f"{r['corr_30d']:+.3f}",
-                    "Δ": f"{r['diff']:.3f}",
-                    "n": r["n"],
-                })
-            if _cal_data:
-                st.dataframe(pd.DataFrame(_cal_data), use_container_width=True, hide_index=True)
-
-            # Adaptive Weights detail
-            if _adaptive_details:
-                st.markdown("**⚖️ Adaptive Weights por Gate**")
-                _aw_data = []
-                for _gkey, _d in sorted(_adaptive_details.items(), key=lambda x: x[1].get("delta") or 0, reverse=True):
-                    _ks = _d.get("kill_status", "ok")
-                    _cf = _d.get("confidence", 0)
-                    icon = "⛔" if _ks == "extreme" else ("⚠️" if _ks == "severe" else ("🟡" if _cf < 0.8 else "✅"))
-                    _aw_data.append({
-                        "": icon,
-                        "Gate": _d.get("gate", _gkey),
-                        "Base": f"{_d.get('base_weight', 0):.2f}",
-                        "Eff":  f"{_d.get('effective_weight', 0):.2f}",
-                        "Conf": f"{_cf:.2f}",
-                        "Δ":    f"{_d.get('delta') or 0:.3f}",
-                        "cfg":  f"{_d.get('corr_cfg') or 0:+.3f}",
-                        "real": f"{_d.get('corr_long') or 0:+.3f}",
-                    })
-                if _aw_data:
-                    st.dataframe(pd.DataFrame(_aw_data), use_container_width=True, hide_index=True)
-
-                # Mini summary
-                _mean_conf = float(np.mean([d.get("confidence", 0) for d in _adaptive_details.values()]))
-                _n_ok  = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "ok" and d.get("confidence", 0) > 0.8)
-                _n_red = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "ok" and d.get("confidence", 0) <= 0.8)
-                _n_sev = sum(1 for d in _adaptive_details.values() if d.get("kill_status") == "severe")
-                _sc1, _sc2, _sc3, _sc4, _sc5 = st.columns(5)
-                _sc1.metric("Mean Conf", f"{_mean_conf:.2f}")
-                _sc2.metric("✅ OK", _n_ok)
-                _sc3.metric("🟡 Reduced", _n_red)
-                _sc4.metric("⚠️ Severe", _n_sev)
-                _sc5.metric("⛔ Extreme", _n_extreme)
-
-    # ── PERFORMANCE MONITORING (Bots 2/3/4) ───────────────────────────────────
+    # ── 2. SEMÁFORO DE FONTES ─────────────────────────────────────────────────
     st.markdown("---")
-    st.markdown("### 📊 Performance Monitoring")
-    st.caption("Saúde de performance dos bots momentum-based (Bot 1 tem monitoring próprio acima)")
+    st.subheader("🚦 Status das Fontes de Dados")
 
-    # Expected Sharpe from backtests
-    _EXPECTED_SHARPE = {"bot2": 2.71, "bot3": 0.64, "bot4": 2.03}
-
-    def _compute_bot_health(trades_df, expected_sharpe=None):
-        if trades_df.empty:
-            return {"status": "⏳", "label": "Sem trades", "n": 0}
-        n = len(trades_df)
-        rets = trades_df["return_pct"].astype(float)
-        wins = int((rets > 0).sum())
-        wr   = wins / n * 100
-        total_ret = float(((1 + rets / 100).prod() - 1) * 100)
-        if n < 10:
-            return {"status": "⏳", "label": f"Início (n={n})", "n": n, "wr": wr, "total": total_ret,
-                    "msg": f"{10-n} trades para análise completa"}
-        gross_win  = float(rets[rets > 0].sum())
-        gross_loss = float(abs(rets[rets <= 0].sum()))
-        pf  = gross_win / gross_loss if gross_loss > 0 else 99.0
-        equity = (1 + rets / 100).cumprod()
-        dd  = float((equity / equity.cummax() - 1).min() * 100)
-        sharpe = None
-        if n >= 20 and rets.std() > 0:
-            sharpe = float((rets.mean() / rets.std()) * (252 ** 0.5))
-        # health classification
-        if wr < 40 or dd < -10 or (sharpe is not None and sharpe < 0):
-            status, label = "🔴", "Crítico"
-        elif wr < 50 or dd < -5 or (sharpe is not None and expected_sharpe and sharpe < expected_sharpe * 0.5):
-            status, label = "🟡", "Atenção"
-        else:
-            status, label = "🟢", "Saudável"
-        msg_parts = []
-        if sharpe is not None and expected_sharpe:
-            msg_parts.append(f"Sharpe {sharpe:.2f} ({sharpe/expected_sharpe*100:.0f}% do backtest {expected_sharpe:.2f})")
-        if dd < -3:
-            msg_parts.append(f"DD {dd:.1f}%")
-        msg = " | ".join(msg_parts) if msg_parts else "Performance alinhada com expectativa"
-        return {"status": status, "label": label, "n": n, "wr": wr, "pf": pf, "dd": dd,
-                "sharpe": sharpe, "total": total_ret, "msg": msg}
-
-    def _load_bot_trades(asset, bot_key):
-        """Load trades for a given asset/bot."""
-        if asset == "sol":
-            return load_sol_trades_json()
-        path_map = {"btc": "data/05_output/trades.parquet",
-                    "eth": "data/05_output/trades_eth.parquet"}
-        df = load_parquet(path_map.get(asset, "data/05_output/trades.parquet"))
-        if df.empty:
-            return df
-        if "entry_bot" in df.columns:
-            df = df[df["entry_bot"] == bot_key]
-        return df.reset_index(drop=True)
-
-    _perf_bots = [
-        {"key": "bot2", "emoji": "🚀", "name": "BOT 2 - Momentum (BTC)", "asset": "btc",
-         "open_port": None},
-        {"key": "bot3", "emoji": "⚡", "name": "BOT 3 - Volume Defensivo (ETH)", "asset": "eth",
-         "open_port": _eth_port if "_eth_port" in dir() else {}},
-        {"key": "bot4", "emoji": "🟣", "name": "BOT 4 - Taker/Flow (SOL)",  "asset": "sol",
-         "open_port": _sol_port if "_sol_port" in dir() else {}},
+    _FONTES = [
+        ("BTC Spot 1h",      "data/01_raw/spot/btc_1h.parquet",                           2),
+        ("Futures OI",       "data/01_raw/futures/oi_4h.parquet",                         6),
+        ("Futures Taker",    "data/01_raw/futures/taker_4h.parquet",                      6),
+        ("Futures Funding",  "data/01_raw/futures/funding_4h.parquet",                    6),
+        ("News Crypto",      "data/01_raw/news/crypto_news.parquet",                      2),
+        ("News Macro",       "data/01_raw/news/macro_news.parquet",                       2),
+        ("News Scores G2a",  "data/02_features/news_scores.parquet",                      2),
+        ("News Regime G2b",  "data/02_features/news_regime.parquet",                      5),
+        ("Gate Zscores",     "data/02_features/gate_zscores.parquet",                     2),
+        ("Score History",    "data/04_scoring/score_history.parquet",                     2),
+        ("ETF Flows",        "data/01_raw/coinglass/etf_flows_daily.parquet",            26),
+        ("FRED Macro",       "data/02_intermediate/macro/fred_daily_clean.parquet",      26),
     ]
 
-    for _pb in _perf_bots:
-        st.markdown(f"#### {_pb['emoji']} {_pb['name']}")
-        _pt = _load_bot_trades(_pb["asset"], _pb["key"])
-        _ph = _compute_bot_health(_pt, _EXPECTED_SHARPE.get(_pb["key"]))
-
-        if _ph["n"] == 0:
-            # Check for open position
-            _op = _pb.get("open_port") or {}
-            if _op.get("has_position"):
-                _ep_v = _op.get("entry_price", 0)
-                st.info(f"⏳ Nenhum trade fechado — posição aberta: ${_ep_v:,.2f} (paper). Aguardando primeiro fechamento.")
+    _fcols = st.columns(4)
+    for _fi, (_fname, _frel, _fmax) in enumerate(_FONTES):
+        _fpath = ROOT / _frel
+        if _fpath.exists():
+            _mtime = datetime.fromtimestamp(_fpath.stat().st_mtime, tz=timezone.utc)
+            _age_h = (datetime.now(tz=timezone.utc) - _mtime).total_seconds() / 3600
+            if _age_h < _fmax * 0.5:
+                _ficon, _fdelta_c = "🟢", "normal"
+            elif _age_h < _fmax:
+                _ficon, _fdelta_c = "🟡", "off"
             else:
-                st.info("⏳ Aguardando primeiro trade.")
+                _ficon, _fdelta_c = "🔴", "inverse"
+            _fval, _fdelta = f"{_age_h:.1f}h", f"limite {_fmax}h"
         else:
-            _pc = st.columns(4)
-            _pc[0].metric("Trades", _ph["n"])
-            _wr_delta = f"🟢 OK" if _ph["wr"] >= 50 else "🔴 Baixo"
-            _pc[1].metric("Win Rate", f"{_ph['wr']:.1f}%", delta=_wr_delta, delta_color="off")
-            if "pf" in _ph:
-                _pf_d = "∞" if _ph["pf"] >= 99 else f"{_ph['pf']:.2f}"
-                _pc[2].metric("Profit Factor", _pf_d)
-            else:
-                _pc[2].metric("Avg Return", f"{_ph.get('avg', 0):+.2f}%")
-            if _ph.get("sharpe") is not None:
-                _pc[3].metric("Sharpe (anual)", f"{_ph['sharpe']:.2f}",
-                              delta=f"{_ph['sharpe']/_EXPECTED_SHARPE[_pb['key']]*100:.0f}% do backtest" if _pb["key"] in _EXPECTED_SHARPE else None,
-                              delta_color="off")
-            else:
-                _pc[3].metric("Total Retorno", f"{_ph['total']:+.2f}%")
-
-            _status_fn = {"🔴": st.error, "🟡": st.warning, "🟢": st.success}.get(_ph["status"], st.info)
-            _status_fn(f"{_ph['status']} {_ph['label']} — {_ph['msg']}")
-
-    # SECTION 8: PAPER TRADING — REMOVIDO (trades exibidos em Bot 1/Bot 2 acima)
-    # Variáveis necessárias para Safety Status abaixo
-    _params     = load_params()
-    _cm_params  = _params.get("capital_management", {})
-    _cm_enabled = _cm_params.get("enabled", False)
-    _buckets    = portfolio.get("buckets", {})
-    _mf_params  = _params.get("momentum_filter", {})
-
-    # =========================================================================
-    # SECTION 9: SAFETY STATUS (Capital Manager — shown only when enabled)
-    # =========================================================================
-    if _cm_enabled and _buckets:
-        st.markdown("---")
-        st.markdown("### 🛡️ Safety Status — Capital Manager")
-
-        _safe_cfg = _cm_params.get("safety", {})
-        _max_dd   = _safe_cfg.get("max_drawdown_pct", 0.15)
-        _max_dl   = _safe_cfg.get("max_daily_loss_pct", 0.05)
-
-        _safe_cols = st.columns(len(_buckets))
-        for _i, (_bkey, _bkt) in enumerate(_buckets.items()):
-            with _safe_cols[_i]:
-                _b_init    = _bkt.get("initial_capital", 1.0)
-                _b_cur     = _bkt.get("current_capital", _b_init)
-                _b_peak    = _bkt.get("peak_capital", _b_init)
-                _b_dd      = (_b_init - _b_cur) / _b_init if _b_init > 0 else 0.0
-                _b_dpnl    = _bkt.get("daily_pnl", 0.0)
-                _b_dbase   = _bkt.get("daily_capital_base", _b_init) or _b_init
-                _b_dloss   = -_b_dpnl / _b_dbase if _b_dpnl < 0 and _b_dbase > 0 else 0.0
-                _b_paused  = _bkt.get("paused_until")
-                _b_reason  = _bkt.get("pause_reason", "")
-
-                _dd_color   = "#f85149" if _b_dd >= _max_dd else ("#d29922" if _b_dd > _max_dd * 0.7 else "#3fb950")
-                _dl_color   = "#f85149" if _b_dloss >= _max_dl else ("#d29922" if _b_dloss > _max_dl * 0.7 else "#3fb950")
-                _pause_html = ""
-                if _b_paused:
-                    try:
-                        _pt = pd.Timestamp(_b_paused)
-                        if _pt.tzinfo is None:
-                            _pt = _pt.tz_localize("UTC")
-                        _rem_h = max(0.0, (_pt - pd.Timestamp.now("UTC")).total_seconds() / 3600)
-                        _pause_html = (
-                            f'<div style="color:#f85149;font-size:11px;margin-top:4px;">'
-                            f'⏸️ PAUSADO {_rem_h:.0f}h ({_b_reason})</div>'
-                        )
-                    except Exception:
-                        _pause_html = f'<div style="color:#f85149;font-size:11px;margin-top:4px;">⏸️ PAUSADO</div>'
-
-                st.markdown(f"""
-<div class="cg-card" style="text-align:center;">
-  <div class="cg-card-title">{_bkt.get("name", _bkey)}</div>
-  <div class="cg-card-value">${_b_cur:,.2f}</div>
-  <div style="font-size:11px;margin-top:4px;">
-    <span style="color:#8b949e;">DD: </span>
-    <span style="color:{_dd_color};">{_b_dd:.1%}</span>
-    <span style="color:#8b949e;"> / {_max_dd:.0%} max</span>
-    &nbsp;|&nbsp;
-    <span style="color:#8b949e;">Dia: </span>
-    <span style="color:{_dl_color};">{_b_dpnl:+.0f} ({_b_dloss:.1%})</span>
-  </div>
-  {_pause_html}
-</div>""", unsafe_allow_html=True)
-
-        st.markdown(
-            f'<div class="cg-card" style="padding:8px 16px; font-size:12px; margin-top:4px;">'
-            f'<span style="color:#8b949e;">Capital Total: </span>'
-            f'<span style="color:#e6edf3;">${portfolio.get("total_capital_usd", capital):,.2f}</span>'
-            f' &nbsp;|&nbsp; '
-            f'<span style="color:#8b949e;">Safety: </span>'
-            f'<span style="color:#8b949e;">DD max {_max_dd:.0%} / Perda diária max {_max_dl:.0%} por bucket</span>'
-            f'</div>',
-            unsafe_allow_html=True,
+            _ficon, _fdelta_c = "🔴", "inverse"
+            _fval, _fdelta = "ausente", "não encontrado"
+        _fcols[_fi % 4].metric(
+            label=f"{_ficon} {_fname}",
+            value=_fval,
+            delta=_fdelta,
+            delta_color=_fdelta_c,
         )
 
-    st.caption(f"btc-trading-v1 | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} | Auto-refresh: {'ON' if auto_refresh else 'OFF'}")
+    # ── 3. GATE SCORES — ÚLTIMOS 7 DIAS ──────────────────────────────────────
+    st.markdown("---")
+    st.subheader("📊 Gate Scores — Últimos 7 dias")
 
+    _sh_path = ROOT / "data/04_scoring/score_history.parquet"
+    if _sh_path.exists():
+        _sh = pd.read_parquet(_sh_path)
+        if "timestamp" in _sh.columns:
+            _sh["timestamp"] = pd.to_datetime(_sh["timestamp"], utc=True)
+            _sh = _sh.set_index("timestamp").sort_index()
+        _cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=7)
+        _sh7 = _sh[_sh.index >= _cutoff]
 
-if __name__ == "__main__" or True:
-    main()
+        if not _sh7.empty:
+            _cols_show = [c for c in ["total_score", "score_raw", "threshold",
+                                       "signal", "block_reason", "regime_multiplier"]
+                          if c in _sh7.columns]
+            st.dataframe(
+                _sh7[_cols_show].tail(10).sort_index(ascending=False),
+                use_container_width=True,
+            )
+            if "total_score" in _sh7.columns:
+                _fig_sh = go.Figure()
+                _fig_sh.add_trace(go.Scatter(
+                    x=_sh7.index, y=_sh7["total_score"],
+                    name="Score Total", line=dict(color=GREEN, width=2),
+                ))
+                if "score_raw" in _sh7.columns:
+                    _fig_sh.add_trace(go.Scatter(
+                        x=_sh7.index, y=_sh7["score_raw"],
+                        name="Score Raw", line=dict(color=BLUE, width=1, dash="dot"),
+                    ))
+                if "threshold" in _sh7.columns:
+                    _fig_sh.add_trace(go.Scatter(
+                        x=_sh7.index, y=_sh7["threshold"],
+                        name="Threshold", line=dict(color=RED, width=1, dash="dash"),
+                    ))
+                _fig_sh.update_layout(
+                    height=280, title="Score Total vs Threshold (7d)",
+                    **{k: v for k, v in PLOTLY.items() if k != "margin"},
+                    margin=dict(l=40, r=20, t=40, b=30),
+                )
+                st.plotly_chart(_fig_sh, use_container_width=True)
+        else:
+            st.info("Nenhum score nos últimos 7 dias.")
+    else:
+        st.warning(f"score_history.parquet não encontrado.")
+
+    # ── 4. PARÂMETROS ATIVOS ──────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("⚙️ Parâmetros Ativos")
+
+    _ap = load_params()
+    _tab1, _tab2 = st.tabs(["Bot 1 — Reversal Gate", "Bot 2 — Momentum"])
+
+    with _tab1:
+        _ex  = _ap.get("execution", {})
+        _rf  = _ap.get("reversal_filter", {})
+        _rfc = _rf.get("cooldown", {})
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            st.markdown("**Stops Dinâmicos (ATR)**")
+            st.table(pd.DataFrame({
+                "Parâmetro": ["Min SL%", "Max SL%", "Min TP%", "Max TP%",
+                              "ATR mult SL", "ATR mult TP", "ATR mult Trail"],
+                "Valor": [
+                    f"{_ex.get('min_stop_loss_pct', 0)*100:.1f}%",
+                    f"{_ex.get('max_stop_loss_pct', 0)*100:.1f}%",
+                    f"{_ex.get('min_take_profit_pct', 0)*100:.1f}%",
+                    f"{_ex.get('max_take_profit_pct', 0)*100:.1f}%",
+                    _ex.get('atr_multiplier_sl', '-'),
+                    _ex.get('atr_multiplier_tp', '-'),
+                    _ex.get('atr_multiplier_trail', '-'),
+                ]
+            }))
+        with _c2:
+            st.markdown("**Reversal Filter + Cooldown**")
+            st.table(pd.DataFrame({
+                "Parâmetro": ["RSI max", "Ret 1d min", "RSI extremo override",
+                              "Cooldown horas SL", "Max SLs consecutivos",
+                              "Pausa SLs consecutivos"],
+                "Valor": [
+                    _rf.get("rsi_max", "-"),
+                    f"{(_rf.get('ret_1d_min') or 0)*100:.1f}%",
+                    _rf.get("rsi_extreme_override", "-"),
+                    _rfc.get("hours_after_sl", "-"),
+                    _rfc.get("max_consecutive_sl", "-"),
+                    f"{_rfc.get('consecutive_sl_pause_hours', '-')}h",
+                ]
+            }))
+
+    with _tab2:
+        _mf  = _ap.get("momentum_filter", {})
+        _mfc = _mf.get("cooldown", {})
+        _sg  = _mf.get("spike_guard", {})
+        _c1, _c2 = st.columns(2)
+        with _c1:
+            st.markdown("**Filtros de Entrada**")
+            st.table(pd.DataFrame({
+                "Parâmetro": ["Enabled", "Stablecoin Z min", "RSI min", "RSI max",
+                              "BB% max", "Dist high 7d min", "Ret 1d min",
+                              "Require MA21", "Kill switches gate",
+                              "News score min"],
+                "Valor": [
+                    "✅" if _mf.get("enabled") else "❌",
+                    _mf.get("stablecoin_z_min", "-"),
+                    _mf.get("rsi_min", "-"),
+                    _mf.get("rsi_max", "-"),
+                    f"{(_mf.get('bb_pct_max') or 0)*100:.0f}%",
+                    f"{(_mf.get('dist_high_7d_min') or 0)*100:.0f}%",
+                    f"{(_mf.get('ret_1d_min') or 0)*100:.1f}%",
+                    "✅" if _mf.get("require_above_ma21") else "❌",
+                    "✅" if _mf.get("respect_gate_kill_switches") else "❌",
+                    _mf.get("news_score_min", "-"),
+                ]
+            }))
+        with _c2:
+            st.markdown("**Stops + Spike Guard**")
+            st.table(pd.DataFrame({
+                "Parâmetro": ["SL%", "TP%", "Trailing%", "Max hold horas",
+                              "Spike guard", "Spike ret max", "Spike RSI max",
+                              "Cooldown horas SL", "Max SLs consecutivos"],
+                "Valor": [
+                    f"{(_mf.get('stop_loss_pct') or 0)*100:.1f}%",
+                    f"{(_mf.get('take_profit_pct') or 0)*100:.1f}%",
+                    f"{(_mf.get('trailing_stop_pct') or 0)*100:.1f}%",
+                    _mf.get("max_hold_hours", "-"),
+                    "✅" if _sg.get("enabled") else "❌",
+                    f"{(_sg.get('spike_ret_max') or 0)*100:.0f}%",
+                    _sg.get("spike_rsi_max", "-"),
+                    _mfc.get("hours_after_sl", "-"),
+                    _mfc.get("max_consecutive_sl", "-"),
+                ]
+            }))
+
+    # ── Footer ────────────────────────────────────────────────────────────────
+    st.markdown("---")
+    st.caption(f"Admin | {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}")
