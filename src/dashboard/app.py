@@ -1663,26 +1663,17 @@ elif view == "Admin":
     else:
         st.caption("⚪ Nenhum contexto salvo ainda.")
 
-    _bias_opt = ["BEAR", "SIDEWAYS", "BULL"]
-    _conf_opt = ["high", "medium", "low"]
-    _cc1, _cc2, _cc3 = st.columns(3)
-    _ctx_bias    = _ctx.get("bias", "SIDEWAYS")
-    _ctx_conf    = _ctx.get("confidence", "medium")
-    _ctx_bias_i  = _bias_opt.index(_ctx_bias) if _ctx_bias in _bias_opt else 1
-    _ctx_conf_i  = _conf_opt.index(_ctx_conf) if _ctx_conf in _conf_opt else 1
-    _new_bias    = _cc1.selectbox("Viés", _bias_opt, index=_ctx_bias_i)
-    _new_conf    = _cc2.selectbox("Confiança", _conf_opt, index=_ctx_conf_i)
-    _new_horizon = _cc3.text_input("Horizonte", value=_ctx.get("horizon", "24-48h"))
+    _cc1, _cc2 = st.columns(2)
+    _new_horizon  = _cc1.text_input("Horizonte (TTL)", value=_ctx.get("horizon", "24-48h"),
+                                     help="Ex: 24h, 48h, 24-48h — define por quanto tempo o contexto é válido")
+    _new_tags_str = _cc2.text_input("Tags (separadas por vírgula)",
+                                     value=", ".join(_ctx.get("tags", [])))
 
     _new_context = st.text_area(
         "Percepção de mercado",
         value=_ctx.get("context", ""),
-        height=120,
+        height=150,
         placeholder="Ex: Trump otimista sobre acordo Iran mas negociações falharam no Paquistão. Hormuz ainda bloqueado...",
-    )
-    _new_tags_str = st.text_input(
-        "Tags (separadas por vírgula)",
-        value=", ".join(_ctx.get("tags", [])),
     )
 
     if st.button("💾 Salvar Contexto"):
@@ -1691,8 +1682,6 @@ elif view == "Admin":
             "author":     "Edmundo",
             "horizon":    _new_horizon,
             "context":    _new_context,
-            "bias":       _new_bias,
-            "confidence": _new_conf,
             "tags":       [t.strip() for t in _new_tags_str.split(",") if t.strip()],
         }
         save_analyst_context(_new_ctx)

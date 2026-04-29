@@ -202,7 +202,7 @@ def _load_recent_articles(hours: int = NEWS_WINDOW_H) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _load_analyst_context() -> dict | None:
-    """Load manual analyst context from JSON. Ignores if older than 12h."""
+    """Load manual analyst context from JSON. TTL driven by horizon field."""
     path = Path("conf/analyst_context.json")
     if not path.exists():
         return None
@@ -211,8 +211,12 @@ def _load_analyst_context() -> dict | None:
             ctx = json.load(f)
         updated = pd.Timestamp(ctx.get("updated_at"), tz="UTC")
         age_h = (pd.Timestamp.now(tz="UTC") - updated).total_seconds() / 3600
-        if age_h > 12:
-            logger.info(f"analyst_context ignorado — {age_h:.1f}h desatualizado")
+        # TTL = first number in horizon string ("24-48h" → 24, "72h" → 72)
+        horizon_str = ctx.get("horizon", "24h")
+        match = re.search(r"\d+", str(horizon_str))
+        ttl_h = float(match.group()) if match else 24.0
+        if age_h > ttl_h:
+            logger.info(f"analyst_context ignorado — {age_h:.1f}h > TTL {ttl_h:.0f}h")
             return None
         ctx["_age_h"] = age_h
         return ctx
@@ -374,20 +378,16 @@ def build_prompt(ctx: dict, articles: list[dict]) -> str:
             "\n════════════════════════════════════════════════════════\n"
             "BLOCO D — CONTEXTO DO ANALISTA (percepção qualitativa)\n"
             "════════════════════════════════════════════════════════\n"
-            f"Atualizado : {analyst['updated_at']} (válido 12h)\n"
-            f"Autor      : {analyst['author']}\n"
+            f"Atualizado : {analyst['updated_at']}\n"
             f"Horizonte  : {analyst.get('horizon', 'não especificado')}\n"
-            f"Viés       : {analyst['bias']} (confiança: {analyst['confidence']})\n"
-            f"Tags       : {', '.join(analyst.get('tags', []))}\n"
-            "\nPercepção:\n"
+            "\nPercepção do analista (contexto qualitativo):\n"
             f"{analyst['context']}\n"
-            "\nINSTRUÇÃO: Este é contexto qualitativo de um analista humano\n"
-            "com acesso a informações não capturadas pelo RSS.\n"
-            "- Pese junto com os dados quantitativos dos BLOCOs A, B e C\n"
-            "- Se reforçar os dados → aumentar confidence em 0.1\n"
+            "\nINSTRUÇÃO: Use este contexto como informação qualitativa adicional\n"
+            "de um analista humano com acesso a fontes não capturadas pelo RSS.\n"
+            "NÃO use viés pré-definido — classifique independentemente\n"
+            "com base no texto e nos dados quantitativos dos BLOCOs B e C.\n"
             "- Se conflitar com os dados → explicar o conflito no reasoning\n"
             "- Se conflitar com as regras obrigatórias → as regras têm prioridade\n"
-            "  mas mencionar o conflito no reasoning\n"
             "════════════════════════════════════════════════════════"
         )
     else:
@@ -534,7 +534,7 @@ def run(dry_run: bool = False) -> dict | None:
         "n_articles":             len(articles),
         "n_relevant":             n_relevant,
         "dominant_cluster":       dominant,
-        "analyst_bias":           analyst["bias"] if analyst else None,
+        "analyst_bias":           "context_used" if analyst else None,
         "analyst_context_age_h":  round(analyst["_age_h"], 2) if analyst else None,
     }
 
