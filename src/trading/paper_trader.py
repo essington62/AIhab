@@ -597,13 +597,37 @@ def check_momentum_filter(technical: dict, zscores: dict, params: dict, news_com
     bb_pct = technical.get("bb_pct")
     close = technical.get("close")
     ma_21 = technical.get("ma_21")
+    ma_200 = technical.get("ma_200")
 
-    sz_min = mf.get("stablecoin_z_min", 1.3)
+    sz_min_base = mf.get("stablecoin_z_min", 1.3)
     ret_min = mf.get("ret_1d_min", 0.0)
     rsi_min = mf.get("rsi_min", 50)
     bb_max = mf.get("bb_pct_max", 0.98)
     require_ma21 = mf.get("require_above_ma21", True)
     news_min = mf.get("news_score_min", -1.0)
+
+    # Regime detection — price_vs_ma21 + close vs MA200 (proxy for ema25 vs ema200)
+    price_vs_ma21 = ((close - ma_21) / ma_21 * 100) if (close and ma_21) else None
+    below_ma200 = (close < ma_200) if (close and ma_200) else None
+    if price_vs_ma21 is not None and below_ma200 is not None:
+        if price_vs_ma21 < 0 and below_ma200:
+            _regime = "BEAR"
+        elif price_vs_ma21 > 0 and not below_ma200:
+            _regime = "BULL"
+        else:
+            _regime = "SIDEWAYS"
+    else:
+        _regime = "UNKNOWN"
+
+    sz_cfg = mf.get("stablecoin_z_regime", {})
+    if _regime == "BEAR":
+        sz_min = sz_cfg.get("bear", -0.5)
+    elif _regime == "BULL":
+        sz_min = sz_cfg.get("bull", sz_min_base)
+    elif _regime == "SIDEWAYS":
+        sz_min = sz_cfg.get("sideways", 0.5)
+    else:
+        sz_min = sz_min_base
 
     result = {
         "stablecoin_z": stablecoin_z,
@@ -618,6 +642,7 @@ def check_momentum_filter(technical: dict, zscores: dict, params: dict, news_com
         "bb_max": bb_max,
         "news_combined_score": news_combined_score,
         "news_min": news_min,
+        "regime": _regime,
     }
 
     if stablecoin_z is None or ret_1d is None or rsi is None or bb_pct is None:
@@ -632,8 +657,13 @@ def check_momentum_filter(technical: dict, zscores: dict, params: dict, news_com
 
     reasons = []
 
-    if stablecoin_z <= sz_min:
-        reasons.append(f"LOW_LIQUIDITY (stable_z={stablecoin_z:.2f} <= {sz_min})")
+    stablecoin_ok = stablecoin_z > sz_min
+    logger.info(
+        f"Stablecoin gate | regime={_regime} | stablecoin_z={stablecoin_z:.2f} | "
+        f"threshold={sz_min:.2f} | ok={stablecoin_ok}"
+    )
+    if not stablecoin_ok:
+        reasons.append(f"LOW_LIQUIDITY (stable_z={stablecoin_z:.2f} <= {sz_min:.2f} [{_regime}])")
 
     if ret_1d <= ret_min:
         reasons.append(f"NEG_MOMENTUM (ret_1d={ret_1d:.4f} <= {ret_min})")

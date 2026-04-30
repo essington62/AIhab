@@ -1024,7 +1024,25 @@ def main():
     _above_ma21 = bool(price and _ma21 and price > _ma21)
 
     # Thresholds reais de parameters.yml
-    _sz_min  = 1.3
+    _mf_params   = load_params().get("momentum_filter", {})
+    _sz_regime_cfg = _mf_params.get("stablecoin_z_regime", {})
+    _ma200_dash  = _latest(spot_df, "ma_200", 0.0) if not spot_df.empty else 0.0
+    _below_ma200 = bool(price and _ma200_dash and price < _ma200_dash)
+    _pvm21       = ((price - _ma21) / _ma21 * 100) if (_ma21 and price) else None
+    if _pvm21 is not None and _ma200_dash:
+        if _pvm21 < 0 and _below_ma200:
+            _b2_regime = "BEAR"
+        elif _pvm21 > 0 and not _below_ma200:
+            _b2_regime = "BULL"
+        else:
+            _b2_regime = "SIDEWAYS"
+    else:
+        _b2_regime = "UNKNOWN"
+    _sz_min_map = {"BEAR": _sz_regime_cfg.get("bear", -0.5),
+                   "SIDEWAYS": _sz_regime_cfg.get("sideways", 0.5),
+                   "BULL": _sz_regime_cfg.get("bull", 1.3),
+                   "UNKNOWN": _mf_params.get("stablecoin_z_min", 1.3)}
+    _sz_min  = _sz_min_map[_b2_regime]
     _r1d_min = 0.0
     _rsi_min = 50
     _bb_max  = 0.98   # bloqueia se >= 0.98 (anti blow-off top)
@@ -1096,7 +1114,7 @@ def main():
     _ma21_str = "ACIMA" if _above_ma21 else "ABAIXO"
     _news_str = f"{_news_val:+.2f}" if _news_val is not None else "N/A"
 
-    _card(_fc[0], "💧", "Stablecoin Z",  _sz_str,   _f_sz[1],   f"> {_sz_min}",    "pos" if _f_sz[0] else "neg")
+    _card(_fc[0], "💧", "Stablecoin Z",  _sz_str,   _f_sz[1],   f"> {_sz_min} [{_b2_regime}]",    "pos" if _f_sz[0] else "neg")
     _card(_fc[1], "📈", "Momentum 24h",  _r1d_str,  _f_r1d[1],  "> 0%",            "pos" if _f_r1d[0] else "neg")
     _card(_fc[2], "📊", "RSI",           _rsi_str,  _f_rsi[1],  f"> {_rsi_min}",   "pos" if _f_rsi[0] else "neg")
     _card(_fc[3], "🎯", "BB (não top)",  _bb_str,   _f_bb[1],   f"< {_bb_max}",    "pos" if _f_bb[0] else "neg")
